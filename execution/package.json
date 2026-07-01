@@ -1,0 +1,19 @@
+{
+  "name": "trading-fleet-execution",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Alpaca paper-trading executor + ledger for the fleet. Consumes signals from the Python research layer; enforces per-bot virtual sub-books.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "execute": "tsx src/run.ts"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

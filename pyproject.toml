@@ -1,0 +1,30 @@
+[project]
+name = "trading-fleet-research"
+version = "0.1.0"
+description = "Research, backtest, and improvement engine for the four-bot trading fleet"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "statsmodels>=0.14",   # cointegration (Engle-Granger, Johansen), OLS factor models
+    "scikit-learn>=1.4",   # GMM regime classifier, gradient-boosted mosaic weights
+    "scipy>=1.12",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+    "psycopg[binary]>=3.1", # journal (Neon Postgres)
+    "pyarrow>=15.0",        # parquet cache
+    "duckdb>=0.10",         # local point-in-time store
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.9"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["research/tests"]
+
+[tool.setuptools.packages.find]
+where = ["research"]
