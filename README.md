@@ -60,6 +60,21 @@ drawing any conclusion.
    `docs/FLEET_PLAN.md §10` advance to paper.
 4. 30-day paper burn-in per bot before any real capital.
 
+## Smart-money 13F signal (Druckenmiller & Cohen)
+
+Two namesakes still file **13F-HR** reports: Druckenmiller (Duquesne Family Office)
+and Cohen (Point72). `smart_money.py` pulls them from SEC EDGAR and diffs quarters
+into new buys / adds / trims / exits:
+
+```bash
+python -m research.scripts.smart_money --ua "Your Name you@email.com"
+```
+
+> 13F is **longs-only, quarter-end, filed up to 45 days late** — no shorts, no
+> timing. It is an *idea filter / one weak mosaic tile*, never a copy-trade or a
+> training label. Under §7e it earns weight only if the journal shows measured,
+> out-of-sample edge. (See the top of `smart_money.py`.)
+
 ## The self-improvement loop (short version)
 
 Not RL on P&L. An **evidence flywheel**:
@@ -90,10 +105,12 @@ research/
     improve.py                                      # Tier-B proposals + Tier-C gates
     theses.py                                       # MACRO thesis 60/120d scoring
     promotion.py                                    # champion/challenger shadow test
+    smart_money.py                                  # 13F picks (Druckenmiller/Cohen)
     bots/
       breakout.py   arb.py          catalyst.py     macro.py
   scripts/
     backtest.py     improve.py                      # backtest / the improvement run
+    smart_money.py                                  # trace 13F picks from SEC EDGAR
   tests/                                            # offline, no credentials
 db/schema.sql                                       # journal (Postgres)
 execution/                                          # TS Alpaca executor (phase 2)
