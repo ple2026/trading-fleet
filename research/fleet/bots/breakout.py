@@ -56,11 +56,12 @@ class Breakout(Bot):
         `rs_floor` sets how selective we are about leadership (O'Neil bought the
         top ~decile), `vol_surge_mult` how much institutional demand a breakout
         must show, `breakout_lookback` defines the pivot horizon, `trend_ema` the
-        trend filter, `stop_pct` the hard risk cap, `min_eps_growth` the CAN SLIM
-        earnings gate applied only when fundamentals are present, and
-        `near_high_floor` the "N" gate — a breakout only counts when price is
-        within reach of its 52-week high (a base breakout, not a bounce off a
-        crushed name 40% below its high).
+        trend filter, `stop_pct` the hard risk cap, and `min_eps_growth` the CAN
+        SLIM earnings gate applied only when fundamentals are present.
+
+        (A near-52wk-high "N" gate was tried and REJECTED: it worsened OOS results
+        on the survivorship-free walk-forward — 2020-24 rewarded beaten-down recovery
+        names over near-high ones — so it is not shipped. See git history.)
         """
         return [
             ParamSpec(name="rs_floor", default=85.0, lo=60.0, hi=95.0),
@@ -71,7 +72,6 @@ class Breakout(Bot):
             ParamSpec(name="trend_ema", default=50.0, lo=20.0, hi=200.0, integer=True),
             ParamSpec(name="stop_pct", default=8.0, lo=4.0, hi=12.0),
             ParamSpec(name="min_eps_growth", default=25.0, lo=0.0, hi=50.0),
-            ParamSpec(name="near_high_floor", default=90.0, lo=70.0, hi=95.0),
         ]
 
     # ------------------------------------------------------------------ helpers
@@ -135,11 +135,9 @@ class Breakout(Bot):
         close clears the prior `breakout_lookback`-day Donchian high — Livermore's
         pivotal point; (2) volume >= `vol_surge_mult`x its 50-day average, proving
         O'Neil-style demand; (3) close is above the `trend_ema` EMA (in-trend);
-        (4) the name is an RS leader (rank >= `rs_floor`); (5) if fundamentals
-        exist for it, quarterly EPS growth clears `min_eps_growth`; and (6) price
-        sits within `near_high_floor`% of its 52-week high — O'Neil's "N": a real
-        base breakout near new-high ground, not a dead-cat pop in a name still 40%
-        underwater. Stops are a fixed percent below entry with a 3:1 target.
+        (4) the name is an RS leader (rank >= `rs_floor`); and (5) if fundamentals
+        exist for it, quarterly EPS growth clears `min_eps_growth`. Stops are a
+        fixed percent below entry with a symmetric 3:1 target.
         """
         rs_floor = float(self.params["rs_floor"])
         vol_mult = float(self.params["vol_surge_mult"])
@@ -147,7 +145,6 @@ class Breakout(Bot):
         trend_n = int(self.params["trend_ema"])
         stop_pct = float(self.params["stop_pct"])
         min_eps = float(self.params["min_eps_growth"])
-        near_high = float(self.params["near_high_floor"])
 
         rs_ranks = self._rs_ranks(ctx)
         need = max(lookback + 1, trend_n, 50)
@@ -189,18 +186,13 @@ class Breakout(Bot):
             if eps_growth is not None and eps_growth < min_eps:
                 continue
 
-            # (6) O'Neil "N": the breakout must occur near new-high ground, not as a
-            # dead-cat pop in a name still deep below its 52-week high. This gate is
-            # what separates a base breakout from a bounce.
-            win = min(_52W, len(high))
-            hh = float(high.iloc[-win:].max())
-            pct_of_52w_high = 100.0 * price / hh if hh > 0 else np.nan
-            if np.isnan(pct_of_52w_high) or pct_of_52w_high < near_high:
-                continue
-
             # ---- passed every gate: build the signal ----
             clenow = float(clenow_momentum(close, 90).iloc[-1])
             clenow_feat = None if np.isnan(clenow) else clenow
+
+            win = min(_52W, len(high))
+            hh = float(high.iloc[-win:].max())
+            pct_of_52w_high = 100.0 * price / hh if hh > 0 else np.nan
 
             # Confidence: blend RS leadership with Clenow trend quality (both 0..1).
             rs_component = rs_rank / 100.0

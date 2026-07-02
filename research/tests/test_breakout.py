@@ -11,10 +11,8 @@ from datetime import datetime
 
 import pandas as pd
 
-from research.fleet.backtest import run_backtest
 from research.fleet.bot import MarketContext
 from research.fleet.bots.breakout import Breakout
-from research.fleet.data import SyntheticProvider, load_panel
 from research.fleet.types import RegimeState, RegimeTag
 
 
@@ -45,15 +43,3 @@ def test_does_not_blanket_exit_in_healthy_regime():
     # blanket market-exit must NOT fire (per-name tells govern instead).
     actions = bot.manage(_ctx(RegimeTag.RANGE, {"AAA"}))
     assert actions == []
-
-
-def test_n_gate_only_tightens_entries():
-    """A stricter near-high floor (O'Neil 'N') can only remove breakouts that are
-    too far below their 52-week high — never add trades."""
-    U = ["SPY", "QQQ", "IWM", "AAPL", "NVDA", "META", "XLE", "OIH",
-         "SMH", "GLD", "GDX", "TLT", "UUP", "DBC", "EEM"]
-    start, end = datetime(2020, 1, 1), datetime(2023, 12, 31)
-    panel = load_panel(U, start, end, SyntheticProvider(seed=7))
-    loose = run_backtest(Breakout({"near_high_floor": 70.0}), panel, start, end).metrics()
-    strict = run_backtest(Breakout({"near_high_floor": 99.0}), panel, start, end).metrics()
-    assert strict.get("trades", 0) <= loose.get("trades", 0)
