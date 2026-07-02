@@ -88,6 +88,27 @@ mosaic tile.
 > training label. Under §7e it earns weight only if the journal shows measured,
 > out-of-sample edge. (See the top of `smart_money.py`.)
 
+## Honest out-of-sample check (survivorship-free)
+
+`scripts/oos.py` runs the walk-forward harness on a survivorship-free sample
+(delisted names included) with optional liquidity + CAN SLIM screens. Adding each
+real O'Neil filter improves BREAKOUT's OOS in the right direction — the apparatus
+working as intended:
+
+| BREAKOUT walk-forward OOS 2020–24 | CAGR | Sharpe | MaxDD |
+|---|---|---|---|
+| raw survivorship-free universe | −12.8% | −0.76 | −51.9% |
+| + liquidity screen (`--min-dv`) | −4.7% | −0.58 | −24.9% |
+| + EDGAR CAN SLIM gate (`--fundamentals edgar`) | −2.5% | −0.37 | −18.2% |
+
+```bash
+python -m research.scripts.oos --bot breakout --min-dv 5000000 --fundamentals edgar
+```
+
+Still negative — not edge. The universe sample is small (RS-rank needs breadth) and
+the full O'Neil stack (industry-group strength, follow-through-day) isn't in yet.
+The point is the method, not the number.
+
 ## The self-improvement loop (short version)
 
 Not RL on P&L. An **evidence flywheel**:
@@ -120,7 +141,8 @@ research/
     promotion.py                                    # champion/challenger shadow test
     smart_money.py                                  # 13F picks (Druckenmiller/Cohen)
     macro_data.py                                   # FRED macro state vector (MACRO)
-    fundamentals.py                                 # Tiingo CAN SLIM (BREAKOUT gate)
+    fundamentals.py                                 # Tiingo CAN SLIM (DOW-30, BREAKOUT gate)
+    edgar_fundamentals.py                           # SEC XBRL CAN SLIM (free, all filers, PIT)
     universe.py                                     # survivorship-free ticker universe
     bots/
       breakout.py   arb.py          catalyst.py     macro.py
