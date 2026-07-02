@@ -45,6 +45,19 @@ def _maybe_macro(start: datetime, end: datetime):
         print(f"(FRED macro unavailable: {e}; MACRO uses the ETF proxy)")
         return None
 
+
+def _maybe_fundamentals(symbols: list[str]):
+    """Build the Tiingo fundamentals panel (CAN SLIM) for covered names, else None."""
+    if not os.environ.get("TIINGO_API_KEY"):
+        return None
+    try:
+        from research.fleet.fundamentals import FundamentalsPanel
+        panel = FundamentalsPanel.from_tiingo(symbols)
+        return panel if panel.frames else None
+    except Exception as e:
+        print(f"(Tiingo fundamentals unavailable: {e})")
+        return None
+
 # A compact universe that covers every bot: leaders for BREAKOUT/CATALYST, ETF
 # pairs for ARB, and macro expressions for MACRO. SPY is the regime benchmark.
 UNIVERSE = [
@@ -71,7 +84,10 @@ def main() -> None:
     print(f"Data provider: {type(provider).__name__}")
     panel = load_panel(UNIVERSE, start, end, provider)
     macro = _maybe_macro(start, end)
-    print(f"Loaded {len(panel)} symbols" + (" | FRED macro on" if macro else "") + "\n")
+    fundamentals = _maybe_fundamentals(UNIVERSE) if not synthetic else None
+    extras = ((" | FRED macro on" if macro else "")
+              + (f" | fundamentals: {len(fundamentals.frames)} names" if fundamentals else ""))
+    print(f"Loaded {len(panel)} symbols{extras}\n")
 
     chosen = [args.bot] if args.bot else list(BOTS)
     header = f"{'bot':<10}{'CAGR%':>8}{'Sharpe':>8}{'MaxDD%':>9}{'Trades':>8}{'Hit%':>7}{'PF':>8}"
@@ -80,7 +96,7 @@ def main() -> None:
     for name in chosen:
         bot = BOTS[name]()
         result = run_backtest(bot, panel, start, end, starting_equity=args.equity,
-                              macro=macro)
+                              macro=macro, fundamentals=fundamentals)
         m = result.metrics()
         if not m:
             print(f"{name:<10}{'(no trades / insufficient data)':>40}")

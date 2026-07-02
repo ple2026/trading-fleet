@@ -56,6 +56,7 @@ def run_fleet_backtest(
     benchmark: str = "SPY",
     journals: dict | None = None,
     macro=None,
+    fundamentals=None,
 ) -> FleetBacktest:
     """Run every bot independently on the same panel; collect their return streams.
 
@@ -72,7 +73,7 @@ def run_fleet_backtest(
         res = run_backtest(
             cls(), panel, start, end,
             starting_equity=seed_equity, benchmark=benchmark, journal=journal,
-            macro=macro,
+            macro=macro, fundamentals=fundamentals,
         )
         equity[name] = res.equity_curve
         trades[name] = res.trades

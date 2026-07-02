@@ -36,6 +36,14 @@ class MacroLookup(Protocol):
     from the FRED plane (and works with a stub in tests)."""
 
     def as_of(self, date: datetime) -> dict[str, float]: ...
+
+
+class FundamentalsLookup(Protocol):
+    """Point-in-time fundamentals per ticker for a date — e.g.
+    `fundamentals.FundamentalsPanel`. Feeds `ctx.fundamentals` (BREAKOUT's CAN SLIM
+    gate, CATALYST's tiles)."""
+
+    def as_of(self, date: datetime) -> dict[str, dict]: ...
 # Unleveraged $10k cash book: total gross exposure (longs + shorts) may not exceed
 # equity. Without this a bot that shorts many names can drive the account negative.
 MAX_GROSS = 1.0
@@ -152,6 +160,7 @@ def run_backtest(
     benchmark: str = "SPY",
     journal: Journal | None = None,
     macro: "MacroLookup | None" = None,
+    fundamentals: "FundamentalsLookup | None" = None,
 ) -> BacktestResult:
     """Simulate one bot over [start, end] on a fixed price panel.
 
@@ -260,6 +269,7 @@ def run_backtest(
             now=today, prices=pit, regime=regime, equity_usd=cash,
             open_symbols=set(positions.keys()),
             macro=macro.as_of(today) if macro is not None else None,
+            fundamentals=fundamentals.as_of(today) if fundamentals is not None else None,
         )
         for action in bot.manage(ctx):
             if action.kind == "exit" and action.symbol in positions:
