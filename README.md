@@ -42,6 +42,8 @@ gates, and the build sequence.
 pip install -e ".[dev]"                    # or: pip install pandas numpy statsmodels scikit-learn scipy
 python -m research.scripts.backtest        # all four bots on synthetic data
 python -m research.scripts.backtest --bot breakout --start 2021-01-01 --end 2024-12-31
+python -m research.scripts.improve         # the improvement run: journal→Tier C→Tier B→allocation
+python -m research.scripts.improve --tune  # + Tier-A walk-forward parameter re-fit (slow)
 ```
 
 With no `ALPACA_*` keys the data plane falls back to a deterministic synthetic

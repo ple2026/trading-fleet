@@ -19,7 +19,9 @@ from research.fleet.walkforward import (
     MAX_DD_WORSENING,
     MIN_SHARPE_GAIN,
     MIN_VALIDATION_TRADES,
+    fleet_oos_sharpe,
     make_windows,
+    oos_sharpe,
     tune,
     walk_forward,
 )
@@ -71,6 +73,19 @@ def test_walk_forward_is_reproducible(panel):
     a = walk_forward(Macro, panel, START, END).metrics()
     b = walk_forward(Macro, panel, START, END).metrics()
     assert a == b
+
+
+def test_oos_sharpe_matches_walk_forward(panel):
+    """The helper is just the walk-forward OOS Sharpe — no in-sample leakage."""
+    direct = walk_forward(Macro, panel, START, END).metrics().get("sharpe", 0.0)
+    assert oos_sharpe(Macro, panel, START, END) == direct
+
+
+def test_fleet_oos_sharpe_covers_every_bot(panel):
+    bots = {"breakout": Breakout, "macro": Macro}  # skip slow catalyst here
+    sharpe = fleet_oos_sharpe(bots, panel, START, END)
+    assert set(sharpe) == set(bots)
+    assert all(isinstance(v, float) for v in sharpe.values())
 
 
 @pytest.mark.parametrize("bot_class", [Breakout, Macro])

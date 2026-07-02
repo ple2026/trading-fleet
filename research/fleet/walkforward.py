@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -139,6 +140,37 @@ def walk_forward(
 
     oos = pd.concat(curves) if curves else pd.Series(dtype=float)
     return WalkForwardResult(oos_equity=oos, trades=trades, windows=windows)
+
+
+def oos_sharpe(
+    bot_class: type[Bot],
+    panel: dict[str, pd.DataFrame],
+    start: datetime,
+    end: datetime,
+    params: dict[str, float] | None = None,
+    **wf_kwargs: Any,
+) -> float:
+    """A bot's out-of-sample Sharpe from the walk-forward harness (0.0 if flat).
+
+    This is the honest edge signal the meta-allocator should tilt on — measured
+    on data the bot never fit, not the in-sample or trailing-window Sharpe.
+    """
+    return float(walk_forward(bot_class, panel, start, end, params, **wf_kwargs)
+                 .metrics().get("sharpe", 0.0))
+
+
+def fleet_oos_sharpe(
+    bots: dict[str, type[Bot]],
+    panel: dict[str, pd.DataFrame],
+    start: datetime,
+    end: datetime,
+    **wf_kwargs: Any,
+) -> dict[str, float]:
+    """Per-bot walk-forward OOS Sharpe — the allocator's bandit-tilt input."""
+    return {
+        name: oos_sharpe(cls, panel, start, end, **wf_kwargs)
+        for name, cls in bots.items()
+    }
 
 
 # ---------------------------------------------------------------- Tier A tuner

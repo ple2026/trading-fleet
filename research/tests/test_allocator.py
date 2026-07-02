@@ -22,6 +22,7 @@ from research.fleet.allocator import (
     allocate,
     bandit_tilt,
     correlation_monitor,
+    feasible_caps,
     risk_parity_weights,
     run_fleet_backtest,
 )
@@ -83,6 +84,29 @@ def test_apply_caps_produces_valid_capped_simplex():
 def test_apply_caps_rejects_infeasible():
     with pytest.raises(ValueError):
         _apply_caps(pd.Series({"a": 0.5, "b": 0.5}), lo=0.6, hi=0.9)
+
+
+def test_feasible_caps_relaxes_for_small_fleets():
+    # Four bots: the §8 policy is exact.
+    assert feasible_caps(4) == (MIN_WEIGHT, MAX_WEIGHT)
+    # Two bots: a 40% ceiling can't sum to 100%, so it widens to 1/n.
+    lo, hi = feasible_caps(2)
+    assert lo == MIN_WEIGHT and hi == 0.5
+    # One bot: it must take the whole book.
+    assert feasible_caps(1) == (MIN_WEIGHT, 1.0)
+
+
+def test_allocate_survives_two_bot_fleet():
+    """Burn-in fleets (fewer bots) must not crash the allocator."""
+    rng = np.random.default_rng(4)
+    idx = pd.bdate_range("2022-01-01", periods=120)
+    returns = pd.DataFrame(
+        {"breakout": rng.normal(0, 0.01, 120), "macro": rng.normal(0, 0.012, 120)},
+        index=idx,
+    )
+    alloc = allocate(returns, total_usd=20_000.0, at=datetime(2022, 6, 30))
+    assert abs(sum(alloc.weights.values()) - 1.0) < 1e-6
+    assert set(alloc.weights) == {"breakout", "macro"}
 
 
 def test_bandit_tilt_favors_higher_sharpe():

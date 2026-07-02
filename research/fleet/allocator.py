@@ -113,6 +113,20 @@ def _rolling_sharpe(returns: pd.DataFrame, window: int = SHARPE_WINDOW) -> pd.Se
     return sharpe.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 
+def feasible_caps(
+    n: int, lo: float = MIN_WEIGHT, hi: float = MAX_WEIGHT
+) -> tuple[float, float]:
+    """Relax the §8 caps just enough to stay feasible for `n` bots.
+
+    The [10%, 40%] policy is written for the full four-bot fleet (4*0.40=1.6 >= 1).
+    With fewer bots — e.g. a burn-in fleet of two — a 40% ceiling can't sum to 100%,
+    so we widen the bound to 1/n. At n=4 this is a no-op and the policy is exact.
+    """
+    if n <= 0:
+        return lo, hi
+    return min(lo, 1.0 / n), max(hi, 1.0 / n)
+
+
 def _apply_caps(
     weights: pd.Series, lo: float = MIN_WEIGHT, hi: float = MAX_WEIGHT
 ) -> pd.Series:
@@ -170,7 +184,8 @@ def bandit_tilt(
     tilted = base_weights * mult
     total = float(tilted.sum())
     tilted = base_weights if total <= 0 else tilted / total
-    return _apply_caps(tilted)
+    lo, hi = feasible_caps(len(base_weights))
+    return _apply_caps(tilted, lo, hi)
 
 
 # --------------------------------------------------------- correlation monitor
