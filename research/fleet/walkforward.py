@@ -204,6 +204,40 @@ class TuningProposal:
             if self.proposed_params[k] != self.current_params[k]
         }
 
+    def config_diff(self) -> str:
+        """Render the parameter change as a reviewable config diff — the artifact a
+        human merges. Empty string when nothing is proposed."""
+        moved = self.diff()
+        if not moved:
+            return ""
+        lines = [f"# {self.bot_id} — Tier-A param re-fit ({self.reason})"]
+        for k, (cur, new) in sorted(moved.items()):
+            lines.append(f"-{k}: {cur:g}")
+            lines.append(f"+{k}: {new:g}")
+        return "\n".join(lines)
+
+    def as_row(self, created_at: datetime | None = None) -> dict[str, Any]:
+        """A `proposals`-table row (tier A). Rejections are logged too, with the
+        gate that failed as `human_reason`, so the audit trail is complete."""
+        return {
+            "bot_id": self.bot_id,
+            "tier": "A",
+            "created_at": created_at,
+            "description": (
+                f"[{self.bot_id}] Tier-A re-fit: {self.reason}"
+                if self.accepted
+                else f"[{self.bot_id}] Tier-A re-fit rejected: {self.reason}"
+            ),
+            "diff": self.config_diff(),
+            "backtest_report": {
+                "current": self.current_metrics,
+                "proposed": self.proposed_metrics,
+                "candidates_evaluated": self.candidates_evaluated,
+            },
+            "status": "draft" if self.accepted else "rejected",
+            "human_reason": None if self.accepted else self.reason,
+        }
+
 
 def _sample_candidate(
     specs: list[ParamSpec], current: dict[str, float], rng: np.random.Generator

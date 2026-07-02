@@ -19,6 +19,7 @@ from research.fleet.walkforward import (
     MAX_DD_WORSENING,
     MIN_SHARPE_GAIN,
     MIN_VALIDATION_TRADES,
+    TuningProposal,
     fleet_oos_sharpe,
     make_windows,
     oos_sharpe,
@@ -86,6 +87,34 @@ def test_fleet_oos_sharpe_covers_every_bot(panel):
     sharpe = fleet_oos_sharpe(bots, panel, START, END)
     assert set(sharpe) == set(bots)
     assert all(isinstance(v, float) for v in sharpe.values())
+
+
+def test_accepted_proposal_renders_config_diff_and_row():
+    prop = TuningProposal(
+        bot_id="breakout", accepted=True,
+        reason="OOS Sharpe 0.50 -> 0.80 (+0.30) with 42 OOS trades",
+        current_params={"rs_floor": 85.0, "stop_pct": 8.0},
+        current_metrics={"sharpe": 0.5},
+        proposed_params={"rs_floor": 88.0, "stop_pct": 8.0},  # only rs_floor moves
+        proposed_metrics={"sharpe": 0.8}, candidates_evaluated=12,
+    )
+    diff = prop.config_diff()
+    assert "-rs_floor: 85" in diff and "+rs_floor: 88" in diff
+    assert "stop_pct" not in diff  # unchanged params are omitted
+    row = prop.as_row()
+    assert row["tier"] == "A" and row["status"] == "draft" and row["human_reason"] is None
+
+
+def test_rejected_proposal_row_records_failed_gate():
+    prop = TuningProposal(
+        bot_id="macro", accepted=False,
+        reason="only 4 OOS trades (< 30) — insufficient to infer",
+        current_params={"stop_pct": 12.0}, current_metrics={"sharpe": 0.1},
+    )
+    assert prop.config_diff() == ""            # nothing proposed
+    row = prop.as_row()
+    assert row["status"] == "rejected"
+    assert "insufficient" in row["human_reason"]  # the gate becomes proposer feedback
 
 
 @pytest.mark.parametrize("bot_class", [Breakout, Macro])

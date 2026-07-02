@@ -115,6 +115,9 @@ def run(start: datetime, end: datetime, total_usd: float, do_tune: bool,
         _rule("Tier A — walk-forward parameter re-fit")
         for name, cls in BOTS.items():
             prop = tune(cls, panel, start, end, n_candidates=tune_candidates)
+            # Record every re-fit (accepted or rejected) to the proposals table —
+            # a rejected re-fit's failed gate is itself audit-worthy.
+            proposals.record_proposal(prop.as_row(created_at=end))
             verdict = "ACCEPT" if prop.accepted else "reject"
             print(f"  {name:<9} [{verdict}] {prop.reason}")
             if prop.accepted:
@@ -122,6 +125,8 @@ def run(start: datetime, end: datetime, total_usd: float, do_tune: bool,
                     f"{k}: {a:g}→{b:g}" for k, (a, b) in prop.diff().items()
                 )
                 print(f"            proposed: {changes}")
+        n_after = len(proposals.records.get("proposals", []))
+        print(f"  → proposals table now holds {n_after} draft/rejected record(s)")
 
     print("\nNote: synthetic-data results are a plumbing check, NOT an edge estimate.")
 
