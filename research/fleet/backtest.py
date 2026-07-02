@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
@@ -27,6 +28,14 @@ from .types import FleetSignal, RegimeState
 
 SLIPPAGE_BPS_EQUITY = 5.0
 TRADING_DAYS = 252
+
+
+class MacroLookup(Protocol):
+    """Anything that can return a point-in-time macro dict for a date — e.g.
+    `macro_data.MacroPanel`. Kept as a Protocol so backtest.py stays decoupled
+    from the FRED plane (and works with a stub in tests)."""
+
+    def as_of(self, date: datetime) -> dict[str, float]: ...
 # Unleveraged $10k cash book: total gross exposure (longs + shorts) may not exceed
 # equity. Without this a bot that shorts many names can drive the account negative.
 MAX_GROSS = 1.0
@@ -142,6 +151,7 @@ def run_backtest(
     starting_equity: float = 10_000.0,
     benchmark: str = "SPY",
     journal: Journal | None = None,
+    macro: "MacroLookup | None" = None,
 ) -> BacktestResult:
     """Simulate one bot over [start, end] on a fixed price panel.
 
@@ -249,6 +259,7 @@ def run_backtest(
         ctx = MarketContext(
             now=today, prices=pit, regime=regime, equity_usd=cash,
             open_symbols=set(positions.keys()),
+            macro=macro.as_of(today) if macro is not None else None,
         )
         for action in bot.manage(ctx):
             if action.kind == "exit" and action.symbol in positions:

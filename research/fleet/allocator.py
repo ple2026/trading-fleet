@@ -55,13 +55,15 @@ def run_fleet_backtest(
     seed_equity: float = 10_000.0,
     benchmark: str = "SPY",
     journals: dict | None = None,
+    macro=None,
 ) -> FleetBacktest:
     """Run every bot independently on the same panel; collect their return streams.
 
     Each bot trades its own $10k sub-book (no shared capital here — the ledger
     enforces that live). The point of running them together is the *joint*
     distribution: the returns DataFrame feeds both the allocator and the
-    correlation monitor.
+    correlation monitor. `macro` (a point-in-time macro panel) is forwarded to every
+    bot; only MACRO consumes it.
     """
     equity: dict[str, pd.Series] = {}
     trades: dict[str, list[Trade]] = {}
@@ -70,6 +72,7 @@ def run_fleet_backtest(
         res = run_backtest(
             cls(), panel, start, end,
             starting_equity=seed_equity, benchmark=benchmark, journal=journal,
+            macro=macro,
         )
         equity[name] = res.equity_curve
         trades[name] = res.trades

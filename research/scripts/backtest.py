@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 from datetime import datetime
 
 from research.fleet.backtest import run_backtest
@@ -22,6 +23,27 @@ from research.fleet.bots.macro import Macro
 from research.fleet.data import default_provider, load_panel
 
 BOTS = {"breakout": Breakout, "arb": Arb, "catalyst": Catalyst, "macro": Macro}
+
+
+def _load_env() -> None:
+    """Best-effort: load .env so real-data keys (TIINGO/FRED) are picked up."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
+
+
+def _maybe_macro(start: datetime, end: datetime):
+    """Build the FRED macro panel when a key is configured; else None (proxy)."""
+    if not os.environ.get("FRED_API_KEY"):
+        return None
+    try:
+        from research.fleet.macro_data import MacroPanel
+        return MacroPanel.from_fred(start, end)
+    except Exception as e:  # network/credential hiccup — fall back to proxy
+        print(f"(FRED macro unavailable: {e}; MACRO uses the ETF proxy)")
+        return None
 
 # A compact universe that covers every bot: leaders for BREAKOUT/CATALYST, ETF
 # pairs for ARB, and macro expressions for MACRO. SPY is the regime benchmark.
@@ -41,12 +63,15 @@ def main() -> None:
     ap.add_argument("--equity", type=float, default=10_000.0)
     args = ap.parse_args()
 
+    _load_env()
     start = datetime.fromisoformat(args.start)
     end = datetime.fromisoformat(args.end)
     provider = default_provider()
+    synthetic = type(provider).__name__ == "SyntheticProvider"
     print(f"Data provider: {type(provider).__name__}")
     panel = load_panel(UNIVERSE, start, end, provider)
-    print(f"Loaded {len(panel)} symbols\n")
+    macro = _maybe_macro(start, end)
+    print(f"Loaded {len(panel)} symbols" + (" | FRED macro on" if macro else "") + "\n")
 
     chosen = [args.bot] if args.bot else list(BOTS)
     header = f"{'bot':<10}{'CAGR%':>8}{'Sharpe':>8}{'MaxDD%':>9}{'Trades':>8}{'Hit%':>7}{'PF':>8}"
@@ -54,7 +79,8 @@ def main() -> None:
     print("-" * len(header))
     for name in chosen:
         bot = BOTS[name]()
-        result = run_backtest(bot, panel, start, end, starting_equity=args.equity)
+        result = run_backtest(bot, panel, start, end, starting_equity=args.equity,
+                              macro=macro)
         m = result.metrics()
         if not m:
             print(f"{name:<10}{'(no trades / insufficient data)':>40}")
@@ -62,7 +88,11 @@ def main() -> None:
         print(f"{name:<10}{m['cagr']:>8}{m['sharpe']:>8}{m['max_dd']:>9}"
               f"{m['trades']:>8}{m['hit_rate']:>7}{m['profit_factor']:>8}")
 
-    print("\nNote: synthetic-data results are a plumbing check, NOT an edge estimate.")
+    if synthetic:
+        print("\nNote: synthetic-data results are a plumbing check, NOT an edge estimate.")
+    else:
+        print("\nNote: real prices but a survivorship-biased universe and IN-SAMPLE. "
+              "Use walk-forward (see walkforward.py) before trusting any number.")
 
 
 if __name__ == "__main__":

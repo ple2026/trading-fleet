@@ -53,12 +53,19 @@ drawing any conclusion.
 
 ## Going live-ish (real data → paper trading)
 
-1. `cp .env.example .env` and fill in `ALPACA_*` (paper), `DATABASE_URL` (Neon),
-   and the research vendor keys (`FMP_API_KEY`, `FINNHUB_API_KEY`, `FRED_API_KEY`).
+1. `cp .env.example .env` and fill in the research vendor keys. With just
+   `TIINGO_API_KEY` (adjusted prices) and `FRED_API_KEY` (macro), the backtest runs
+   on **real data** — `python -m research.scripts.backtest` auto-loads `.env`,
+   prefers Tiingo, and turns on MACRO's FRED state vector. Add `ALPACA_*` (paper) and
+   `DATABASE_URL` (Neon) for execution + the persistent journal.
 2. `psql "$DATABASE_URL" -f db/schema.sql` to create the journal.
 3. Backtest each bot on real bars; only bots clearing the promotion gates in
    `docs/FLEET_PLAN.md §10` advance to paper.
 4. 30-day paper burn-in per bot before any real capital.
+
+> Real prices ≠ trustworthy backtest. The default universe is survivorship-biased
+> and a single-pass backtest is in-sample — use `walkforward.py` and the holdout
+> vault (§7e) before believing any number.
 
 ## Smart-money 13F signal (Druckenmiller & Cohen)
 
@@ -112,6 +119,7 @@ research/
     theses.py                                       # MACRO thesis 60/120d scoring
     promotion.py                                    # champion/challenger shadow test
     smart_money.py                                  # 13F picks (Druckenmiller/Cohen)
+    macro_data.py                                   # FRED macro state vector (MACRO)
     bots/
       breakout.py   arb.py          catalyst.py     macro.py
   scripts/
