@@ -33,6 +33,10 @@ MANAGERS: dict[str, dict[str, str]] = {
 # SEC asks automated clients to identify themselves; override with your own contact.
 DEFAULT_USER_AGENT = "trading-fleet-research contact@example.com"
 
+# OpenFIGI maps the CUSIPs in 13F filings to tradable tickers (free; a key raises
+# the rate limits from 25 req/min & 10 ids/req to far higher).
+OPENFIGI_URL = "https://api.openfigi.com/v3/mapping"
+
 
 @dataclass(frozen=True)
 class Holding:
@@ -216,6 +220,60 @@ def fundamentals_overlay(
     Merge this into ``ctx.fundamentals`` when building a live MarketContext.
     """
     return {t: {"institutional_conviction": v} for t, v in conviction.items()}
+
+
+# ------------------------------------------------ CUSIP -> ticker (OpenFIGI)
+
+def _parse_openfigi_response(
+    cusips: list[str], payload: list[dict]
+) -> dict[str, str]:
+    """Turn an OpenFIGI /mapping response (aligned to the request order) into
+    {cusip: ticker}. Prefers the consolidated US listing; unmatched CUSIPs (the
+    response carries a ``warning`` instead of ``data``) are simply dropped."""
+    out: dict[str, str] = {}
+    for cusip, entry in zip(cusips, payload):
+        data = entry.get("data") if isinstance(entry, dict) else None
+        if not data:
+            continue
+        pick = next((d for d in data if d.get("exchCode") == "US"), data[0])
+        ticker = pick.get("ticker")
+        if ticker:
+            out[cusip] = ticker
+    return out
+
+
+def resolve_cusips(
+    cusips: list[str],
+    *,
+    api_key: str | None = None,
+    batch_size: int | None = None,
+    throttle_s: float = 0.0,
+    user_agent: str = DEFAULT_USER_AGENT,
+) -> dict[str, str]:
+    """Map CUSIPs to tickers via OpenFIGI (network). Batches within OpenFIGI's
+    per-request cap (10 anonymous / 100 with a key); set ``throttle_s`` to stay
+    under the requests-per-minute limit when mapping many names anonymously."""
+    import time
+
+    import requests
+
+    seen = list(dict.fromkeys(cusips))          # dedup, preserve order
+    if batch_size is None:
+        batch_size = 100 if api_key else 10
+    headers = {"Content-Type": "application/json", "User-Agent": user_agent}
+    if api_key:
+        headers["X-OPENFIGI-APIKEY"] = api_key
+
+    out: dict[str, str] = {}
+    for i in range(0, len(seen), batch_size):
+        batch = seen[i:i + batch_size]
+        body = [{"idType": "ID_CUSIP", "idValue": c} for c in batch]
+        r = requests.post(OPENFIGI_URL, headers=headers, json=body, timeout=30)
+        r.raise_for_status()
+        out.update(_parse_openfigi_response(batch, r.json()))
+        if throttle_s and i + batch_size < len(seen):
+            time.sleep(throttle_s)
+    return out
 
 
 # --------------------------------------------------------------- network (opt-in)

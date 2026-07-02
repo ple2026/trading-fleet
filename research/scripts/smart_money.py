@@ -20,10 +20,24 @@ from research.fleet.smart_money import (
     MANAGERS,
     diff_filings,
     fetch_manager_filings,
+    resolve_cusips,
 )
 
 
-def _report(key: str, user_agent: str, top_n: int) -> None:
+def _resolve_tickers(changes, user_agent: str, openfigi_key: str | None) -> None:
+    """Resolve NEW/EXIT CUSIPs to tickers (OpenFIGI) and print the signed tile."""
+    strong = [c for c in changes if c.action in ("new", "exit")]
+    cmap = resolve_cusips([c.cusip for c in strong], api_key=openfigi_key,
+                          user_agent=user_agent, throttle_s=0.0 if openfigi_key else 2.5)
+    buys = sorted(cmap[c.cusip] for c in strong if c.action == "new" and c.cusip in cmap)
+    sells = sorted(cmap[c.cusip] for c in strong if c.action == "exit" and c.cusip in cmap)
+    print(f"\n  Ticker conviction (resolved {len(cmap)}/{len(strong)} via OpenFIGI):")
+    print(f"    BUY  (+1): {', '.join(buys)}")
+    print(f"    SELL (-1): {', '.join(sells)}")
+
+
+def _report(key: str, user_agent: str, top_n: int, resolve: bool,
+            openfigi_key: str | None) -> None:
     m = MANAGERS[key]
     print(f"\n{'=' * 72}\n{m['fund']}  (CIK {m['cik']})\n{'=' * 72}")
     filings = fetch_manager_filings(m["cik"], n_quarters=2, user_agent=user_agent)
@@ -53,6 +67,9 @@ def _report(key: str, user_agent: str, top_n: int) -> None:
         print(f"    {label} ({len(items)}): {names}")
     print(f"    ADDED: {len(buckets.get('add', []))}   TRIMMED: {len(buckets.get('trim', []))}")
 
+    if resolve:
+        _resolve_tickers(changes, user_agent, openfigi_key)
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
@@ -61,9 +78,13 @@ def main() -> None:
     ap.add_argument("--ua", default=DEFAULT_USER_AGENT,
                     help="User-Agent for SEC (use your name + email)")
     ap.add_argument("--top", type=int, default=12)
+    ap.add_argument("--resolve", action="store_true",
+                    help="resolve new/exit CUSIPs to tickers via OpenFIGI")
+    ap.add_argument("--openfigi-key", default=None,
+                    help="OpenFIGI API key (optional; raises rate limits)")
     args = ap.parse_args()
     for key in ([args.manager] if args.manager else list(MANAGERS)):
-        _report(key, args.ua, args.top)
+        _report(key, args.ua, args.top, args.resolve, args.openfigi_key)
 
 
 if __name__ == "__main__":

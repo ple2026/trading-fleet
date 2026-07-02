@@ -11,9 +11,12 @@ from pathlib import Path
 
 import pandas as pd
 
+import json
+
 from research.fleet.bots.catalyst import Catalyst
 from research.fleet.smart_money import (
     Filing,
+    _parse_openfigi_response,
     conviction_signals,
     diff_filings,
     fundamentals_overlay,
@@ -108,6 +111,37 @@ def test_two_managers_agreement_reinforces():
         {"a": [q1, q0], "b": [q1, q0]}, {avgo: "AVGO"}
     )
     assert tc["AVGO"] == 1.0
+
+
+def test_openfigi_parser_maps_cusip_to_ticker():
+    """Parse a saved real OpenFIGI response into {cusip: ticker}, US listing first."""
+    cus = json.loads((FIX / "openfigi_sample_cusips.json").read_text())
+    payload = json.loads((FIX / "openfigi_sample.json").read_text())
+    order = [cus["broadcom"], cus["alphabet"]]
+    mapping = _parse_openfigi_response(order, payload)
+    assert mapping[cus["broadcom"]] == "AVGO"
+    assert mapping[cus["alphabet"]] == "GOOGL"
+
+
+def test_openfigi_parser_drops_unmatched():
+    # A response entry with a 'warning' (no match) must be skipped, not crash.
+    payload = [{"data": [{"ticker": "AVGO", "exchCode": "US"}]}, {"warning": "No id found"}]
+    mapping = _parse_openfigi_response(["11135F101", "000000000"], payload)
+    assert mapping == {"11135F101": "AVGO"}
+
+
+def test_end_to_end_overlay_from_cusip_map():
+    """13F changes -> conviction -> (resolved) tickers -> CATALYST fundamentals overlay."""
+    q1 = _load("duquesne_2026q1_infotable.xml")
+    q0 = _load("duquesne_2025q4_infotable.xml")
+    changes = diff_filings(q1, q0)
+    avgo = next(c.cusip for c in changes if "broadcom" in c.issuer.lower())
+    cmap = {avgo: "AVGO"}                       # as OpenFIGI would resolve it
+    conv = ticker_conviction({"druck": [q1, q0]}, cmap)
+    overlay = fundamentals_overlay(conv)
+    assert overlay["AVGO"] == {"institutional_conviction": 1.0}
+    # And CATALYST consumes exactly that shape.
+    assert Catalyst()._institutional_conviction(overlay["AVGO"]) == 1.0
 
 
 def test_catalyst_reads_institutional_tile():
