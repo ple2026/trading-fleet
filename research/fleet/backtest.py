@@ -4,7 +4,10 @@ Design rules baked in (the anti-overfitting constitution):
   - No lookahead: bots only ever see bars dated <= the simulated `now`.
   - T+1 execution: a signal generated on day D fills at day D+1's open.
   - Slippage floor: min 5 bps equities on every fill, always.
-  - Walk-forward is a first-class primitive; in-sample metrics are never returned.
+
+This module is the single-pass simulator. The anchored walk-forward harness that
+wraps it (fit -> validate -> roll, out-of-sample metrics only) lives in
+`walkforward.py`; in-sample results are never reported from there.
 """
 
 from __future__ import annotations
@@ -17,9 +20,10 @@ import pandas as pd
 
 from .bot import Bot, MarketContext
 from .data import slice_pit
+from .journal import Journal
 from .kelly import size_order
 from .regime import classify_price_regime
-from .types import FleetSignal
+from .types import FleetSignal, RegimeState
 
 SLIPPAGE_BPS_EQUITY = 5.0
 TRADING_DAYS = 252
@@ -39,6 +43,13 @@ class Position:
     side: str
     max_favorable_bps: float = 0.0
     max_adverse_bps: float = 0.0
+    # Regime label at entry — Tier C reads this off closed positions to measure
+    # each bot's regime-conditional edge.
+    entry_regime: str = ""
+    # The decision snapshot the entry signal carried. Tier B replays these features
+    # against the trade's outcome to find recurring failure modes.
+    entry_features: dict = field(default_factory=dict)
+    thesis: str = ""
 
 
 @dataclass
@@ -87,6 +98,11 @@ def _close_cash(cash: float, pos: "Position", fill: float) -> tuple[float, float
     return pnl, cash
 
 
+def _regime_payload(regime: RegimeState) -> dict:
+    """Flatten a RegimeState into the JSON blob the journal stores per decision."""
+    return {"label": regime.label.value, "conviction": regime.conviction, **regime.vector}
+
+
 def run_backtest(
     bot: Bot,
     panel: dict[str, pd.DataFrame],
@@ -94,12 +110,19 @@ def run_backtest(
     end: datetime,
     starting_equity: float = 10_000.0,
     benchmark: str = "SPY",
+    journal: Journal | None = None,
 ) -> BacktestResult:
     """Simulate one bot over [start, end] on a fixed price panel.
 
     `panel` must include the benchmark symbol for regime classification. Bots that
     need fundamentals/calendar/macro receive them as None here — a stock-only
     smoke run — and their concrete data planes wire those in for full backtests.
+
+    When a `journal` is supplied, every signal is recorded with its disposition
+    (taken / rejected_*) — including the counterfactuals the improvement engine
+    needs: signals blocked because the regime was unfavorable are scanned and
+    logged as `rejected_regime` even though they never trade. Every closed
+    position is journaled with MFE/MAE, exit reason, and entry regime.
     """
     all_dates = sorted(
         {d for df in panel.values() for d in df.index if start <= d <= end}
@@ -112,6 +135,29 @@ def run_backtest(
     positions: dict[str, Position] = {}
     trades: list[Trade] = []
     curve: dict[datetime, float] = {}
+
+    def _record_trade(
+        pos: Position, exit_fill: float, pnl: float, reason: str, exit_at: datetime
+    ) -> None:
+        """Build the Trade record, append it, and journal the position close."""
+        per_share_risk = abs(pos.entry_px - pos.stop) or 1e-9
+        r_multiple = pnl / (per_share_risk * pos.qty)
+        trades.append(Trade(
+            symbol=pos.symbol, side=pos.side, entry_at=pos.entry_at, exit_at=exit_at,
+            entry_px=pos.entry_px, exit_px=exit_fill, qty=pos.qty, pnl_usd=pnl,
+            r_multiple=r_multiple, exit_reason=reason,
+            max_favorable_bps=pos.max_favorable_bps, max_adverse_bps=pos.max_adverse_bps,
+        ))
+        if journal is not None:
+            journal.record_position_close({
+                "bot_id": bot.id, "symbol": pos.symbol, "opened_at": pos.entry_at,
+                "closed_at": exit_at, "entry_px": pos.entry_px, "exit_px": exit_fill,
+                "qty": pos.qty, "max_favorable_bps": pos.max_favorable_bps,
+                "max_adverse_bps": pos.max_adverse_bps, "exit_reason": reason,
+                "pnl_usd": pnl, "r_multiple": r_multiple, "side": pos.side,
+                "entry_regime": pos.entry_regime,
+                "entry_features": pos.entry_features, "thesis": pos.thesis,
+            })
 
     for i, today in enumerate(all_dates):
         pit = slice_pit(panel, today)
@@ -143,14 +189,7 @@ def run_backtest(
             if exit_px is not None:
                 fill = _apply_slippage(exit_px, "sell" if pos.side == "buy" else "buy")
                 pnl, cash = _close_cash(cash, pos, fill)
-                per_share_risk = abs(pos.entry_px - pos.stop) or 1e-9
-                trades.append(Trade(
-                    symbol=sym, side=pos.side, entry_at=pos.entry_at, exit_at=today,
-                    entry_px=pos.entry_px, exit_px=fill, qty=pos.qty, pnl_usd=pnl,
-                    r_multiple=pnl / (per_share_risk * pos.qty),
-                    exit_reason=exit_reason, max_favorable_bps=pos.max_favorable_bps,
-                    max_adverse_bps=pos.max_adverse_bps,
-                ))
+                _record_trade(pos, fill, pnl, exit_reason, today)
                 del positions[sym]
 
         # --- management actions from the bot (trend-break, time stops, etc.) ---
@@ -166,56 +205,75 @@ def run_backtest(
                     continue
                 px = _apply_slippage(float(bar["c"].iloc[0]), "sell" if pos.side == "buy" else "buy")
                 pnl, cash = _close_cash(cash, pos, px)
-                per_share_risk = abs(pos.entry_px - pos.stop) or 1e-9
-                trades.append(Trade(
-                    symbol=pos.symbol, side=pos.side, entry_at=pos.entry_at, exit_at=today,
-                    entry_px=pos.entry_px, exit_px=px, qty=pos.qty, pnl_usd=pnl,
-                    r_multiple=pnl / (per_share_risk * pos.qty), exit_reason=action.reason,
-                    max_favorable_bps=pos.max_favorable_bps, max_adverse_bps=pos.max_adverse_bps,
-                ))
+                _record_trade(pos, px, pnl, action.reason, today)
                 del positions[action.symbol]
 
         # --- new entries: scan today, fill at NEXT day's open (T+1) ---
-        if bot.may_trade(regime) and i + 1 < len(all_dates):
+        may = bot.may_trade(regime)
+        regime_json = _regime_payload(regime) if journal is not None else None
+
+        def _reject(sig: FleetSignal, reason_code: str, why: str) -> None:
+            if journal is not None:
+                journal.record_signal(sig, reason_code, reject_reason=why, regime=regime_json)
+
+        # Scan even when the regime gate is shut IFF we are journaling, so the
+        # improvement engine sees what the bot *would* have done (Tier C data).
+        if (may or journal is not None) and i + 1 < len(all_dates):
             next_day = all_dates[i + 1]
-            equity_now = cash + sum(
-                (float(panel[s].loc[panel[s].index == today, "c"].iloc[0])
-                 * (p.qty if p.side == "buy" else -p.qty))
-                for s, p in positions.items()
-                if today in panel[s].index
-            )
-            gross_open = sum(p.entry_px * p.qty for p in positions.values())
             signals: list[FleetSignal] = bot.scan(ctx)
             # Rank by confidence so that when we hit a cap we keep the bot's best
             # ideas, not whatever happened to be iterated first.
             signals = sorted(signals, key=lambda s: s.confidence, reverse=True)
-            for sig in signals:
-                if len(positions) >= bot.max_concurrent:
-                    break
-                if sig.symbol in positions:
-                    continue
-                order = size_order(sig, cash)
-                if order is None:
-                    continue
-                nb = panel.get(sig.symbol)
-                if nb is None or next_day not in nb.index:
-                    continue
-                fill = _apply_slippage(float(nb.loc[next_day, "o"]), sig.side)
-                notional = fill * order.qty
-                # Unleveraged gross-exposure cap (longs + shorts <= equity).
-                if gross_open + notional > equity_now * MAX_GROSS:
-                    continue
-                if sig.side == "buy":
-                    if notional > cash:
-                        continue
-                    cash -= notional          # pay for the shares
-                else:
-                    cash += notional          # short sale: receive proceeds
-                gross_open += notional
-                positions[sig.symbol] = Position(
-                    symbol=sig.symbol, qty=order.qty, entry_px=fill, entry_at=next_day,
-                    stop=sig.stop_loss, target=sig.take_profit, side=sig.side,
+
+            if not may:
+                for sig in signals:
+                    _reject(sig, "rejected_regime",
+                            f"regime {regime.label.value} not in favorable set")
+            else:
+                equity_now = cash + sum(
+                    (float(panel[s].loc[panel[s].index == today, "c"].iloc[0])
+                     * (p.qty if p.side == "buy" else -p.qty))
+                    for s, p in positions.items()
+                    if today in panel[s].index
                 )
+                gross_open = sum(p.entry_px * p.qty for p in positions.values())
+                for sig in signals:
+                    if len(positions) >= bot.max_concurrent:
+                        _reject(sig, "rejected_cap", "max_concurrent positions held")
+                        continue
+                    if sig.symbol in positions:
+                        _reject(sig, "rejected_dup", "already holding symbol")
+                        continue
+                    order = size_order(sig, cash)
+                    if order is None:
+                        _reject(sig, "rejected_risk", "no risk budget (size_order=None)")
+                        continue
+                    nb = panel.get(sig.symbol)
+                    if nb is None or next_day not in nb.index:
+                        _reject(sig, "rejected_nodata", "no next-day bar to fill")
+                        continue
+                    fill = _apply_slippage(float(nb.loc[next_day, "o"]), sig.side)
+                    notional = fill * order.qty
+                    # Unleveraged gross-exposure cap (longs + shorts <= equity).
+                    if gross_open + notional > equity_now * MAX_GROSS:
+                        _reject(sig, "rejected_gross", "gross-exposure cap")
+                        continue
+                    if sig.side == "buy":
+                        if notional > cash:
+                            _reject(sig, "rejected_cash", "insufficient cash")
+                            continue
+                        cash -= notional          # pay for the shares
+                    else:
+                        cash += notional          # short sale: receive proceeds
+                    gross_open += notional
+                    positions[sig.symbol] = Position(
+                        symbol=sig.symbol, qty=order.qty, entry_px=fill, entry_at=next_day,
+                        stop=sig.stop_loss, target=sig.take_profit, side=sig.side,
+                        entry_regime=regime.label.value,
+                        entry_features=dict(sig.features), thesis=sig.thesis,
+                    )
+                    if journal is not None:
+                        journal.record_signal(sig, "taken", regime=regime_json)
 
         # --- record equity: cash + long marks - short liabilities ---
         mkt = 0.0

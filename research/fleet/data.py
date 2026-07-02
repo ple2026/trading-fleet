@@ -11,8 +11,9 @@ concrete implementations land with their respective bots (FMP, Finnhub, FRED).
 
 from __future__ import annotations
 
+import hashlib
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Protocol
 
 import numpy as np
@@ -36,8 +37,21 @@ class SyntheticProvider:
         self.seed = seed
         self.start_price = start_price
 
+    @staticmethod
+    def _symbol_offset(symbol: str) -> int:
+        """Stable per-symbol seed offset.
+
+        `hash(symbol)` is salted per process (PYTHONHASHSEED), so using it here
+        would make the "deterministic" generator produce different prices on every
+        run — silently breaking backtest reproducibility and any walk-forward or
+        Tier-A comparison that assumes a fixed data panel. A content hash is stable
+        across processes.
+        """
+        digest = hashlib.blake2b(symbol.encode("utf-8"), digest_size=4).digest()
+        return int.from_bytes(digest, "big") % 10_000
+
     def daily_bars(self, symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
-        rng = np.random.default_rng(self.seed + hash(symbol) % 10_000)
+        rng = np.random.default_rng(self.seed + self._symbol_offset(symbol))
         days = pd.bdate_range(start, end)
         n = len(days)
         # Piecewise drift/vol regimes to exercise the regime classifier. Drift is

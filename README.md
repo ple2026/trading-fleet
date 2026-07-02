@@ -82,13 +82,24 @@ research/
   fleet/
     types.py        indicators.py   bot.py          # shared contracts
     data.py         regime.py       kelly.py        # platform
-    journal.py      backtest.py                     # platform
+    journal.py      backtest.py                     # platform (journal-wired)
+    walkforward.py                                  # walk-forward + Tier-A tuner
+    allocator.py                                    # L3 meta-allocator + corr monitor
+    improve.py                                      # Tier-B proposals + Tier-C gates
     bots/
       breakout.py   arb.py          catalyst.py     macro.py
   scripts/
     backtest.py                                     # run one/all bots
-  tests/
+  tests/                                            # 32 tests, offline
 db/schema.sql                                       # journal (Postgres)
 execution/                                          # TS Alpaca executor (phase 2)
 docs/FLEET_PLAN.md
 ```
+
+The improvement engine is wired end-to-end offline: `run_backtest(..., journal=…)`
+records every decision (taken **and** rejected) plus closed-position outcomes;
+`walkforward.tune` re-fits parameters against the §7b OOS gates; `allocator.allocate`
+sizes bots by risk-parity + quarter-Kelly Sharpe tilt with the §8 correlation
+freeze; `improve` turns the journal into Tier-C regime recommendations and
+bounded Tier-B rule-change proposals. All of it runs on synthetic data with no
+credentials — a plumbing check, not an edge estimate.
