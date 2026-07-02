@@ -192,7 +192,11 @@ def run(start: datetime, end: datetime, total_usd: float, do_tune: bool,
             n_after = len(proposals.records.get("proposals", []))
             print(f"  → proposals table now holds {n_after} record(s)")
 
-    print("\nNote: synthetic-data results are a plumbing check, NOT an edge estimate.")
+    if synthetic:
+        print("\nNote: synthetic-data results are a plumbing check, NOT an edge estimate.")
+    else:
+        print("\nNote: real prices but a survivorship-biased universe — plumbing over "
+              "real data, not an edge estimate. Broaden the universe (universe.py) first.")
 
 
 def main() -> None:
