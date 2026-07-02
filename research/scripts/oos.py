@@ -69,6 +69,8 @@ def main() -> None:
                     help="min median daily $ volume (liquidity screen; 0=off)")
     ap.add_argument("--fundamentals", choices=["none", "edgar"], default="none",
                     help="apply the CAN SLIM EPS gate from a point-in-time source")
+    ap.add_argument("--circuit-pct", type=float, default=15.0,
+                    help="per-bot drawdown circuit breaker %% (0=off)")
     args = ap.parse_args()
     _load_env()
 
@@ -108,8 +110,11 @@ def main() -> None:
               f"(point-in-time, filed dates; uncovered names pass the gate ungated)")
 
     bot_class = BOTS[args.bot]
-    print(f"\nWalk-forward OOS for {args.bot} (3y train -> 6m test, rolling)…")
-    res = walk_forward(bot_class, panel, start, end, fundamentals=fundamentals)
+    cb = args.circuit_pct / 100.0 if args.circuit_pct > 0 else None
+    cb_note = f", {args.circuit_pct:.0f}% drawdown circuit breaker" if cb else ""
+    print(f"\nWalk-forward OOS for {args.bot} (3y train -> 6m test, rolling{cb_note})…")
+    res = walk_forward(bot_class, panel, start, end, fundamentals=fundamentals,
+                       circuit_breaker_pct=cb)
     m = res.metrics()
     if not m:
         print("(no OOS trades — sample too small / too illiquid)")

@@ -161,8 +161,14 @@ def run_backtest(
     journal: Journal | None = None,
     macro: "MacroLookup | None" = None,
     fundamentals: "FundamentalsLookup | None" = None,
+    circuit_breaker_pct: float | None = None,
 ) -> BacktestResult:
     """Simulate one bot over [start, end] on a fixed price panel.
+
+    `circuit_breaker_pct` (e.g. 0.15) is the per-bot drawdown circuit breaker the
+    live ledger enforces: when equity is that far below its high-water mark, NEW
+    entries are paused (open positions are still managed and exited) until it
+    recovers. None (default) disables it — so existing backtests are unchanged.
 
     `panel` must include the benchmark symbol for regime classification. Bots that
     need fundamentals/calendar/macro receive them as None here — a stock-only
@@ -185,6 +191,7 @@ def run_backtest(
     positions: dict[str, Position] = {}
     trades: list[Trade] = []
     curve: dict[datetime, float] = {}
+    high_water = starting_equity        # for the per-bot drawdown circuit breaker
 
     def _record_trade(
         pos: Position, exit_fill: float, pnl: float, reason: str, exit_at: datetime
@@ -330,7 +337,18 @@ def run_backtest(
                     + (p.hedge_entry_px * p.hedge_qty if p.hedge_symbol else 0.0)
                     for p in positions.values()
                 )
+                # Per-bot drawdown circuit breaker: while equity is >= the threshold
+                # below its high-water mark, pause NEW entries (managed exits still run).
+                halted = (
+                    circuit_breaker_pct is not None and high_water > 0
+                    and (high_water - equity_now) / high_water >= circuit_breaker_pct
+                )
                 for sig in signals:
+                    if halted:
+                        _reject(sig, "rejected_circuit",
+                                f"drawdown circuit breaker "
+                                f">= {circuit_breaker_pct * 100:.0f}% below high-water")
+                        continue
                     if len(positions) >= bot.max_concurrent:
                         _reject(sig, "rejected_cap", "max_concurrent positions held")
                         continue
@@ -404,6 +422,7 @@ def run_backtest(
                 if not hbar.empty:
                     mkt += _leg_mark(pos.hedge_side, pos.hedge_qty, float(hbar["c"].iloc[0]))
         curve[today] = cash + mkt
+        high_water = max(high_water, curve[today])
 
     return BacktestResult(equity_curve=pd.Series(curve), trades=trades)
 

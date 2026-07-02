@@ -116,6 +116,7 @@ def walk_forward(
     benchmark: str = "SPY",
     macro=None,
     fundamentals=None,
+    circuit_breaker_pct: float | None = None,
 ) -> WalkForwardResult:
     """Run ``bot_class`` walk-forward with fixed ``params``; return OOS-only result.
 
@@ -135,6 +136,7 @@ def walk_forward(
             bot, panel, w.test_start, w.test_end,
             starting_equity=equity, benchmark=benchmark,
             macro=macro, fundamentals=fundamentals,
+            circuit_breaker_pct=circuit_breaker_pct,
         )
         if res.equity_curve.empty:
             continue
