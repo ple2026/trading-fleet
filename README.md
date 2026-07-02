@@ -121,6 +121,7 @@ research/
     smart_money.py                                  # 13F picks (Druckenmiller/Cohen)
     macro_data.py                                   # FRED macro state vector (MACRO)
     fundamentals.py                                 # Tiingo CAN SLIM (BREAKOUT gate)
+    universe.py                                     # survivorship-free ticker universe
     bots/
       breakout.py   arb.py          catalyst.py     macro.py
   scripts/
