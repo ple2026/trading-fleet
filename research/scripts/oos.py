@@ -125,16 +125,23 @@ def main() -> None:
     print(f"  {args.bot:<9} CAGR%={m['cagr']}  Sharpe={m['sharpe']}  MaxDD%={m['max_dd']}  "
           f"Trades={m['trades']}  Hit%={m['hit_rate']}  PF={m['profit_factor']}")
 
-    # Benchmark: SPY buy-and-hold over the SAME OOS window. A strategy that cannot
-    # beat this on a risk-adjusted basis is not adding value over an index fund.
-    bench = _spy_benchmark(panel["SPY"], res.oos_equity)
-    if bench:
-        print(f"  {'SPY b&h':<9} CAGR%={bench['cagr']}  Sharpe={bench['sharpe']}  "
-              f"MaxDD%={bench['max_dd']}   <- beat THIS or just buy the index")
+    # Two benchmarks over the SAME OOS window:
+    #   SPY b&h   — cap-weighted index; the "just buy the index" bar.
+    #   EW pond   — equal-weight buy-hold of the SAME liquid universe; the fair
+    #               opportunity-set bar. The gap SPY - EW is the mega-cap premium
+    #               the strategy never had access to, so beating EW (not SPY) is the
+    #               honest test of stock SELECTION within its pond.
+    spy = _spy_benchmark(panel["SPY"], res.oos_equity)
+    if spy:
+        print(f"  {'SPY b&h':<9} CAGR%={spy['cagr']}  Sharpe={spy['sharpe']}  "
+              f"MaxDD%={spy['max_dd']}   <- cap-weighted index")
+    ew = _ew_benchmark(panel, res.oos_equity)
+    if ew:
+        print(f"  {'EW pond':<9} CAGR%={ew['cagr']}  Sharpe={ew['sharpe']}  "
+              f"MaxDD%={ew['max_dd']}   <- equal-weight SAME universe (fair bar for selection)")
 
-    print("\nNote: survivorship-free prices, walk-forward OOS — bias-corrected, but not "
-          "edge: a random ~equal-weight liquid basket is a weaker opportunity set than "
-          "cap-weighted SPY, and the full O'Neil selection stack isn't in yet.")
+    print("\nNote: survivorship-free prices, walk-forward OOS — bias-corrected. Beat EW "
+          "pond to prove stock selection; beat SPY to prove the whole thing beats indexing.")
 
 
 def _spy_benchmark(spy, oos_equity) -> dict | None:
@@ -152,6 +159,38 @@ def _spy_benchmark(spy, oos_equity) -> dict | None:
         "cagr": round(((c.iloc[-1] / c.iloc[0]) ** (1 / years) - 1) * 100, 2),
         "sharpe": round(float(rets.mean() / rets.std() * np.sqrt(252)), 2) if rets.std() > 0 else 0.0,
         "max_dd": round(float(((c - cummax) / cummax).min()) * 100, 2),
+    }
+
+
+def _ew_benchmark(panel, oos_equity) -> dict | None:
+    """Equal-weight, daily-rebalanced buy-and-hold of the loaded universe (ex-SPY)
+    over the OOS span. Each day's return is the mean across names that traded that
+    day, so a name that delists simply drops out — the fair 'average liquid name'
+    opportunity set the strategy actually fished in."""
+    import numpy as np
+    import pandas as pd
+    if oos_equity is None or oos_equity.empty:
+        return None
+    lo, hi = oos_equity.index.min(), oos_equity.index.max()
+    cols = {}
+    for sym, df in panel.items():
+        if sym == "SPY":
+            continue
+        c = df["c"].loc[(df.index >= lo) & (df.index <= hi)]
+        if len(c) > 1:
+            cols[sym] = c.pct_change()
+    if not cols:
+        return None
+    daily = pd.DataFrame(cols).mean(axis=1).dropna()   # equal-weight daily return
+    if daily.empty:
+        return None
+    curve = (1 + daily).cumprod()
+    years = len(curve) / 252
+    cummax = curve.cummax()
+    return {
+        "cagr": round((curve.iloc[-1] ** (1 / years) - 1) * 100, 2) if years > 0 else 0.0,
+        "sharpe": round(float(daily.mean() / daily.std() * np.sqrt(252)), 2) if daily.std() > 0 else 0.0,
+        "max_dd": round(float(((curve - cummax) / cummax).min()) * 100, 2),
     }
 
 
