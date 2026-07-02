@@ -23,6 +23,7 @@ demonstrable in a fresh checkout:
 from __future__ import annotations
 
 import argparse
+import os
 from datetime import datetime
 
 from research.fleet.allocator import allocate, run_fleet_backtest
@@ -56,16 +57,51 @@ def _rule(title: str) -> None:
     print(f"\n{title}\n" + "-" * len(title))
 
 
+def _load_env() -> None:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
+
+
+def _real_planes(start: datetime, end: datetime, synthetic: bool):
+    """Build FRED macro + Tiingo fundamentals planes when keys exist (real data)."""
+    if synthetic:
+        return None, None
+    macro = fundamentals = None
+    if os.environ.get("FRED_API_KEY"):
+        try:
+            from research.fleet.macro_data import MacroPanel
+            macro = MacroPanel.from_fred(start, end)
+        except Exception as e:
+            print(f"(FRED macro unavailable: {e})")
+    if os.environ.get("TIINGO_API_KEY"):
+        try:
+            from research.fleet.fundamentals import FundamentalsPanel
+            fp = FundamentalsPanel.from_tiingo(UNIVERSE)
+            fundamentals = fp if fp.frames else None
+        except Exception as e:
+            print(f"(Tiingo fundamentals unavailable: {e})")
+    return macro, fundamentals
+
+
 def run(start: datetime, end: datetime, total_usd: float, do_tune: bool,
         tune_candidates: int) -> None:
+    _load_env()
     provider = default_provider()
+    synthetic = type(provider).__name__ == "SyntheticProvider"
     print(f"Data provider: {type(provider).__name__}  |  window {start.date()} → {end.date()}")
     panel = load_panel(UNIVERSE, start, end, provider)
-    print(f"Loaded {len(panel)} symbols across {len(BOTS)} bots")
+    macro, fundamentals = _real_planes(start, end, synthetic)
+    tags = ((" | FRED macro" if macro else "")
+            + (f" | fundamentals:{len(fundamentals.frames)}" if fundamentals else ""))
+    print(f"Loaded {len(panel)} symbols across {len(BOTS)} bots{tags}")
 
     # 1) Fleet backtest, journaling every decision per bot. -------------------
     journals = {name: Journal(keep_in_memory=True) for name in BOTS}
-    fleet = run_fleet_backtest(BOTS, panel, start, end, journals=journals)
+    fleet = run_fleet_backtest(BOTS, panel, start, end, journals=journals,
+                               macro=macro, fundamentals=fundamentals)
     positions = [row for j in journals.values() for row in j.records.get("positions", [])]
     signal_counts = {
         name: len(j.records.get("signals", [])) for name, j in journals.items()
@@ -120,7 +156,7 @@ def run(start: datetime, end: datetime, total_usd: float, do_tune: bool,
     # 4) Meta-allocation on walk-forward OOS Sharpe. --------------------------
     _rule("Meta-allocation (risk-parity + quarter-Kelly tilt on OOS Sharpe)")
     print("  computing walk-forward OOS Sharpe per bot…")
-    oos = fleet_oos_sharpe(BOTS, panel, start, end)
+    oos = fleet_oos_sharpe(BOTS, panel, start, end, macro=macro, fundamentals=fundamentals)
     alloc = allocate(fleet.returns, total_usd=total_usd, at=end, oos_sharpe=oos)
     for name in BOTS:
         print(f"  {name:<9} OOS Sharpe {oos[name]:+.2f}  →  "
@@ -138,7 +174,8 @@ def run(start: datetime, end: datetime, total_usd: float, do_tune: bool,
         else:
             print(f"  tune on {start.date()}→{split.date()}, shadow on {split.date()}→{end.date()}")
             for name, cls in BOTS.items():
-                prop = tune(cls, panel, start, split, n_candidates=tune_candidates)
+                prop = tune(cls, panel, start, split, n_candidates=tune_candidates,
+                            macro=macro, fundamentals=fundamentals)
                 proposals.record_proposal(prop.as_row(created_at=end))
                 verdict = "ACCEPT" if prop.accepted else "reject"
                 print(f"  {name:<9} [{verdict}] {prop.reason}")
@@ -148,7 +185,8 @@ def run(start: datetime, end: datetime, total_usd: float, do_tune: bool,
                     f"{k}: {a:g}→{b:g}" for k, (a, b) in prop.diff().items()
                 )
                 print(f"            proposed: {changes}")
-                shadow = promote_from_tuning(prop, cls, panel, split, end)
+                shadow = promote_from_tuning(prop, cls, panel, split, end,
+                                             macro=macro, fundamentals=fundamentals)
                 decision = "PROMOTE" if shadow and shadow.promote else "hold champion"
                 print(f"            shadow: [{decision}] {shadow.reason if shadow else ''}")
             n_after = len(proposals.records.get("proposals", []))

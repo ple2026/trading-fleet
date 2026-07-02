@@ -114,11 +114,14 @@ def walk_forward(
     anchored: bool = True,
     starting_equity: float = 10_000.0,
     benchmark: str = "SPY",
+    macro=None,
+    fundamentals=None,
 ) -> WalkForwardResult:
     """Run ``bot_class`` walk-forward with fixed ``params``; return OOS-only result.
 
     A fresh bot is constructed per window so stateful bots reset cleanly, and
     equity is chained across windows to give one continuous out-of-sample curve.
+    Point-in-time ``macro`` / ``fundamentals`` planes are forwarded to each window.
     """
     dates = _panel_dates(panel, start, end)
     windows = make_windows(dates, train_years, test_months, anchored)
@@ -131,6 +134,7 @@ def walk_forward(
         res = run_backtest(
             bot, panel, w.test_start, w.test_end,
             starting_equity=equity, benchmark=benchmark,
+            macro=macro, fundamentals=fundamentals,
         )
         if res.equity_curve.empty:
             continue
@@ -312,6 +316,8 @@ def tune(
     test_months: int = 6,
     anchored: bool = True,
     benchmark: str = "SPY",
+    macro=None,
+    fundamentals=None,
 ) -> TuningProposal:
     """Tier-A walk-forward re-fit. Searches ``param_space`` within drift bounds,
     scores candidates by OOS Sharpe, and accepts one only if it clears every §7b
@@ -325,6 +331,7 @@ def tune(
     wf_kwargs = dict(
         train_years=train_years, test_months=test_months,
         anchored=anchored, benchmark=benchmark,
+        macro=macro, fundamentals=fundamentals,
     )
 
     baseline = walk_forward(bot_class, panel, start, end, current, **wf_kwargs).metrics()

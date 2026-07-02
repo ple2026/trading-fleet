@@ -94,13 +94,17 @@ def shadow_compare(
     min_trades: int = MIN_SHADOW_TRADES,
     sharpe_margin: float = MIN_SHARPE_GAIN,
     dd_worsening: float = MAX_DD_WORSENING,
+    macro=None,
+    fundamentals=None,
 ) -> ShadowResult:
     """Run champion and challenger over the held-out shadow window and decide."""
     champ = run_backtest(
-        bot_class(champion_params), panel, shadow_start, shadow_end, benchmark=benchmark
+        bot_class(champion_params), panel, shadow_start, shadow_end,
+        benchmark=benchmark, macro=macro, fundamentals=fundamentals,
     ).metrics()
     chal = run_backtest(
-        bot_class(challenger_params), panel, shadow_start, shadow_end, benchmark=benchmark
+        bot_class(challenger_params), panel, shadow_start, shadow_end,
+        benchmark=benchmark, macro=macro, fundamentals=fundamentals,
     ).metrics()
     promote, reason = _promotion_gate(
         champ, chal, min_trades=min_trades,
