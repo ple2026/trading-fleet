@@ -88,11 +88,13 @@ research/
     walkforward.py                                  # walk-forward + Tier-A tuner
     allocator.py                                    # L3 meta-allocator + corr monitor
     improve.py                                      # Tier-B proposals + Tier-C gates
+    theses.py                                       # MACRO thesis 60/120d scoring
+    promotion.py                                    # champion/challenger shadow test
     bots/
       breakout.py   arb.py          catalyst.py     macro.py
   scripts/
-    backtest.py                                     # run one/all bots
-  tests/                                            # 32 tests, offline
+    backtest.py     improve.py                      # backtest / the improvement run
+  tests/                                            # offline, no credentials
 db/schema.sql                                       # journal (Postgres)
 execution/                                          # TS Alpaca executor (phase 2)
 docs/FLEET_PLAN.md
@@ -103,5 +105,8 @@ records every decision (taken **and** rejected) plus closed-position outcomes;
 `walkforward.tune` re-fits parameters against the §7b OOS gates; `allocator.allocate`
 sizes bots by risk-parity + quarter-Kelly Sharpe tilt with the §8 correlation
 freeze; `improve` turns the journal into Tier-C regime recommendations and
-bounded Tier-B rule-change proposals. All of it runs on synthetic data with no
-credentials — a plumbing check, not an edge estimate.
+bounded Tier-B rule-change proposals; `theses` scores MACRO's falsifiable theses at
+60/120 days; and `promotion` shadow-validates an accepted challenger on a held-out
+window before it can replace the champion. ARB is modelled as a true two-leg,
+beta-neutral pair. All of it runs on synthetic data with no credentials — a
+plumbing check, not an edge estimate.

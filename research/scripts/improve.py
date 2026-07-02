@@ -33,6 +33,8 @@ from research.fleet.bots.macro import Macro
 from research.fleet.data import default_provider, load_panel
 from research.fleet.improve import propose_rule_change, recommend_regimes
 from research.fleet.journal import Journal
+from research.fleet.promotion import promote_from_tuning, split_date
+from research.fleet.theses import post_mortem, score_theses, theses_from_journal
 from research.fleet.walkforward import fleet_oos_sharpe, tune
 
 BOTS = {"breakout": Breakout, "arb": Arb, "catalyst": Catalyst, "macro": Macro}
@@ -100,6 +102,21 @@ def run(start: datetime, end: datetime, total_usd: float, do_tune: bool,
     n_props = len(proposals.records.get("proposals", []))
     print(f"  → {n_props} proposal(s) recorded to the proposals table (status=draft)")
 
+    # 3b) MACRO thesis scoring — falsify what was claimed. --------------------
+    if "macro" in journals:
+        _rule("MACRO theses — 60/120-day scoring & post-mortem")
+        thesis_rows = theses_from_journal(journals["macro"].records.get("signals", []))
+        scored = score_theses(thesis_rows, panel)
+        for st in scored:
+            journals["macro"].record_thesis(st.as_row())
+        pm = post_mortem(scored)
+        scorable = [t for t in scored if t.score_60d is not None]
+        print(f"  {len(thesis_rows)} theses, {len(scorable)} scorable at 60d")
+        if not pm:
+            print("  (not enough per-driver history for a post-mortem yet)")
+        for d in sorted(pm, key=lambda x: x.mean_score_60d):
+            print(f"  {d.driver_key:<16} {d.verdict}")
+
     # 4) Meta-allocation on walk-forward OOS Sharpe. --------------------------
     _rule("Meta-allocation (risk-parity + quarter-Kelly tilt on OOS Sharpe)")
     print("  computing walk-forward OOS Sharpe per bot…")
@@ -110,23 +127,32 @@ def run(start: datetime, end: datetime, total_usd: float, do_tune: bool,
               f"weight {alloc.weights[name]:>6.1%}  (${alloc.capital_usd[name]:,.0f})")
     print(f"  {alloc.reason}")
 
-    # 5) Tier A — walk-forward parameter re-fit (opt-in; slow). ---------------
+    # 5) Tier A — walk-forward re-fit, then shadow-validate on a held-out tail. -
     if do_tune:
-        _rule("Tier A — walk-forward parameter re-fit")
-        for name, cls in BOTS.items():
-            prop = tune(cls, panel, start, end, n_candidates=tune_candidates)
-            # Record every re-fit (accepted or rejected) to the proposals table —
-            # a rejected re-fit's failed gate is itself audit-worthy.
-            proposals.record_proposal(prop.as_row(created_at=end))
-            verdict = "ACCEPT" if prop.accepted else "reject"
-            print(f"  {name:<9} [{verdict}] {prop.reason}")
-            if prop.accepted:
+        _rule("Tier A — walk-forward re-fit + shadow promotion")
+        # Hold out the last ~year: the tuner fits on [start, split]; an accepted
+        # challenger must then beat the champion on [split, end], which it never saw.
+        split = split_date(panel, end, holdout_days=252)
+        if split is None:
+            print("  (not enough history to hold out a shadow window)")
+        else:
+            print(f"  tune on {start.date()}→{split.date()}, shadow on {split.date()}→{end.date()}")
+            for name, cls in BOTS.items():
+                prop = tune(cls, panel, start, split, n_candidates=tune_candidates)
+                proposals.record_proposal(prop.as_row(created_at=end))
+                verdict = "ACCEPT" if prop.accepted else "reject"
+                print(f"  {name:<9} [{verdict}] {prop.reason}")
+                if not prop.accepted:
+                    continue
                 changes = ", ".join(
                     f"{k}: {a:g}→{b:g}" for k, (a, b) in prop.diff().items()
                 )
                 print(f"            proposed: {changes}")
-        n_after = len(proposals.records.get("proposals", []))
-        print(f"  → proposals table now holds {n_after} draft/rejected record(s)")
+                shadow = promote_from_tuning(prop, cls, panel, split, end)
+                decision = "PROMOTE" if shadow and shadow.promote else "hold champion"
+                print(f"            shadow: [{decision}] {shadow.reason if shadow else ''}")
+            n_after = len(proposals.records.get("proposals", []))
+            print(f"  → proposals table now holds {n_after} record(s)")
 
     print("\nNote: synthetic-data results are a plumbing check, NOT an edge estimate.")
 

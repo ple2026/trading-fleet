@@ -25,7 +25,7 @@ def test_improvement_run_wires_end_to_end(monkeypatch, capsys):
         total_usd=20_000.0, do_tune=False, tune_candidates=4,
     )
     out = capsys.readouterr().out
-    for section in ("Journal", "Tier C", "Tier B", "Meta-allocation"):
+    for section in ("Journal", "Tier C", "Tier B", "MACRO theses", "Meta-allocation"):
         assert section in out
     # Allocation must name both bots and be a plausible fleet report.
     assert "breakout" in out and "macro" in out

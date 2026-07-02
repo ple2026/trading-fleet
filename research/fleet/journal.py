@@ -92,6 +92,7 @@ class Journal:
             "side": signal.side,
             "features": signal.features,
             "thesis": signal.thesis,
+            "invalidation": signal.invalidation,
             "confidence": signal.confidence,
             "regime": regime,
             "action": action,
@@ -156,3 +157,25 @@ class Journal:
             )
         elif self.persist_jsonl:
             self._write_jsonl("proposals", row)
+
+    def record_thesis(self, row: dict[str, Any]) -> None:
+        """Log a MACRO falsifiable thesis with its 60/120-day scores and post-mortem.
+
+        Theses are how MACRO is held accountable: each carries an explicit
+        invalidation, and the quarterly post-mortem asks whether the driver
+        actually predicted the move.
+        """
+        self._capture("theses", row)
+        if self.db_url:
+            self._write_pg(
+                """insert into theses
+                   (bot_id, opened_at, statement, invalidation, score_60d, score_120d, post_mortem)
+                   values (%s,%s,%s,%s,%s,%s,%s)""",
+                (
+                    row.get("bot_id"), row.get("opened_at"), row.get("statement"),
+                    row.get("invalidation"), row.get("score_60d"),
+                    row.get("score_120d"), row.get("post_mortem"),
+                ),
+            )
+        elif self.persist_jsonl:
+            self._write_jsonl("theses", row)
