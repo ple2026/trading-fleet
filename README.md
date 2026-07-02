@@ -95,19 +95,28 @@ mosaic tile.
 real O'Neil filter improves BREAKOUT's OOS in the right direction — the apparatus
 working as intended:
 
-| BREAKOUT walk-forward OOS 2020–24 | CAGR | Sharpe | MaxDD |
+On a 147-name liquid sample (46% of the raw draw already delisted), each real
+control moves BREAKOUT the right way — and the regime-exit shows the drawdown was an
+*exit* problem, not an entry one:
+
+| BREAKOUT walk-forward OOS 2020–24 (147 names) | CAGR | Sharpe | MaxDD |
 |---|---|---|---|
-| raw survivorship-free universe | −12.8% | −0.76 | −51.9% |
-| + liquidity screen (`--min-dv`) | −4.7% | −0.58 | −24.9% |
-| + EDGAR CAN SLIM gate (`--fundamentals edgar`) | −2.5% | −0.37 | −18.2% |
+| baseline | −9.6% | −0.32 | −48.7% |
+| + 15% drawdown circuit breaker (pause entries) | −8.4% | −0.28 | −45.4% |
+| + regime-exit — sell into weakness (O'Neil "M") | −6.0% | −0.31 | −35.4% |
+| **SPY buy & hold (benchmark)** | **+14.4%** | — | **−33.7%** |
 
 ```bash
 python -m research.scripts.oos --bot breakout --min-dv 5000000 --fundamentals edgar
 ```
 
-Still negative — not edge. The universe sample is small (RS-rank needs breadth) and
-the full O'Neil stack (industry-group strength, follow-through-day) isn't in yet.
-The point is the method, not the number.
+**The verdict is honest and unflattering: BREAKOUT loses to just buying the index**,
+on both return and (until the regime-exit) drawdown. The controls fixed the tail
+risk (−49%→−35%, now ≈ SPY's −34%) but not the lack of edge. A random ~equal-weight
+liquid basket is a weaker opportunity set than cap-weighted SPY, and the full O'Neil
+stack (industry-group leadership, follow-through-day) isn't in yet. The value here is
+the *method* — a bias-corrected, benchmarked, walk-forward measurement that refuses
+to flatter the strategy — not the number.
 
 ## The self-improvement loop (short version)
 

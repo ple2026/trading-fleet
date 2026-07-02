@@ -237,14 +237,26 @@ class Breakout(Bot):
     # ------------------------------------------------------------------ manage
 
     def manage(self, ctx: MarketContext) -> list[ManagementAction]:
-        """Exit open positions on Livermore's "abnormal reaction."
+        """Exit open positions on Livermore's "abnormal reaction" — or when the
+        general market rolls over (O'Neil's "M").
 
-        Two tells end a winning trade: a *trend break* — three consecutive closes
-        back below the `trend_ema` EMA, meaning the line of least resistance has
-        flipped — or a *climax top* — price stretched >50% above trend with RSI(14)
-        over 80, the blow-off where Livermore sold into strength. Either fires an
-        EXIT; otherwise the position is left to run.
+        First, the market rule: when the regime turns RISK_OFF / TRENDING_DOWN,
+        exit EVERY leader at once. O'Neil found three of four stocks follow the
+        market, so when it tops you sell your leaders rather than waiting for each
+        to break its own trend — selling INTO weakness. (The per-name tells below
+        are too slow in a fast correction; this is the exit-side drawdown control.)
+
+        Otherwise, two per-name tells end a winning trade: a *trend break* — three
+        consecutive closes back below the `trend_ema` EMA — or a *climax top* —
+        price stretched >50% above trend with RSI(14) over 80. Either fires an EXIT.
         """
+        if ctx.regime.label in (RegimeTag.RISK_OFF, RegimeTag.TRENDING_DOWN):
+            return [
+                ManagementAction(kind="exit", symbol=sym,
+                                 reason="market turned down (O'Neil M): sell the leaders")
+                for sym in ctx.open_symbols
+            ]
+
         trend_n = int(self.params["trend_ema"])
         actions: list[ManagementAction] = []
 

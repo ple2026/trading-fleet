@@ -122,11 +122,37 @@ def main() -> None:
     oos_span = (f"{res.oos_equity.index.min().date()}..{res.oos_equity.index.max().date()}"
                 if not res.oos_equity.empty else "n/a")
     print(f"  OOS window : {oos_span} across {len(res.windows)} rolls")
-    print(f"  CAGR%={m['cagr']}  Sharpe={m['sharpe']}  MaxDD%={m['max_dd']}  "
+    print(f"  {args.bot:<9} CAGR%={m['cagr']}  Sharpe={m['sharpe']}  MaxDD%={m['max_dd']}  "
           f"Trades={m['trades']}  Hit%={m['hit_rate']}  PF={m['profit_factor']}")
-    print("\nNote: survivorship-free prices, walk-forward OOS — the first numbers here "
-          "not rigged by hindsight. Still not edge: the raw ticker pool has no liquidity "
-          "or point-in-time index filter (paid feed). Treat as a bias-corrected plumbing check.")
+
+    # Benchmark: SPY buy-and-hold over the SAME OOS window. A strategy that cannot
+    # beat this on a risk-adjusted basis is not adding value over an index fund.
+    bench = _spy_benchmark(panel["SPY"], res.oos_equity)
+    if bench:
+        print(f"  {'SPY b&h':<9} CAGR%={bench['cagr']}  Sharpe={bench['sharpe']}  "
+              f"MaxDD%={bench['max_dd']}   <- beat THIS or just buy the index")
+
+    print("\nNote: survivorship-free prices, walk-forward OOS — bias-corrected, but not "
+          "edge: a random ~equal-weight liquid basket is a weaker opportunity set than "
+          "cap-weighted SPY, and the full O'Neil selection stack isn't in yet.")
+
+
+def _spy_benchmark(spy, oos_equity) -> dict | None:
+    """Buy-and-hold SPY metrics over the OOS curve's span (same start/end days)."""
+    import numpy as np
+    if oos_equity is None or oos_equity.empty:
+        return None
+    c = spy["c"].loc[(spy.index >= oos_equity.index.min()) & (spy.index <= oos_equity.index.max())]
+    if len(c) < 2:
+        return None
+    rets = c.pct_change().dropna()
+    years = len(c) / 252
+    cummax = c.cummax()
+    return {
+        "cagr": round(((c.iloc[-1] / c.iloc[0]) ** (1 / years) - 1) * 100, 2),
+        "sharpe": round(float(rets.mean() / rets.std() * np.sqrt(252)), 2) if rets.std() > 0 else 0.0,
+        "max_dd": round(float(((c - cummax) / cummax).min()) * 100, 2),
+    }
 
 
 if __name__ == "__main__":
