@@ -9,11 +9,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
+
+from research.fleet.bots.catalyst import Catalyst
 from research.fleet.smart_money import (
     Filing,
     conviction_signals,
     diff_filings,
+    fundamentals_overlay,
     parse_information_table,
+    ticker_conviction,
 )
 
 FIX = Path(__file__).parent / "fixtures"
@@ -78,3 +83,48 @@ def test_conviction_signal_bounds_and_signs():
             assert v > 0
         elif a == "trim":
             assert v < 0
+
+
+def test_ticker_conviction_maps_cusip_to_ticker():
+    q1 = _load("duquesne_2026q1_infotable.xml")
+    q0 = _load("duquesne_2025q4_infotable.xml")
+    changes = diff_filings(q1, q0)
+    # Build the CUSIP->ticker map from the real filing (a new buy and an exit).
+    avgo = next(c.cusip for c in changes if "broadcom" in c.issuer.lower() and c.action == "new")
+    googl = next(c.cusip for c in changes if "alphabet" in c.issuer.lower() and c.action == "exit")
+    tc = ticker_conviction({"druckenmiller": [q1, q0]}, {avgo: "AVGO", googl: "GOOGL"})
+    assert tc["AVGO"] == 1.0 and tc["GOOGL"] == -1.0
+    # Unmapped CUSIPs are dropped, so only the two mapped tickers appear.
+    assert set(tc) == {"AVGO", "GOOGL"}
+
+
+def test_two_managers_agreement_reinforces():
+    q1 = _load("duquesne_2026q1_infotable.xml")
+    q0 = _load("duquesne_2025q4_infotable.xml")
+    changes = diff_filings(q1, q0)
+    avgo = next(c.cusip for c in changes if "broadcom" in c.issuer.lower() and c.action == "new")
+    # Same manager filings under two keys => same +1 new buy => average stays +1.
+    tc = ticker_conviction(
+        {"a": [q1, q0], "b": [q1, q0]}, {avgo: "AVGO"}
+    )
+    assert tc["AVGO"] == 1.0
+
+
+def test_catalyst_reads_institutional_tile():
+    """The overlay feeds CATALYST's mosaic as a signed tile."""
+    cat = Catalyst()
+    # A flat price series so price-based tiles are near zero; the institutional
+    # tile should then dominate the composite's sign.
+    idx = pd.bdate_range("2023-01-01", periods=40)
+    df = pd.DataFrame({"o": 100.0, "h": 100.0, "l": 100.0, "c": 100.0, "v": 1e6}, index=idx)
+
+    overlay = fundamentals_overlay({"XYZ": 0.9})
+    bull, comps_bull = cat._mosaic_score(df, overlay["XYZ"])
+    assert "institutional_conviction" in comps_bull
+    assert comps_bull["institutional_conviction"] == 0.9
+
+    bear, _ = cat._mosaic_score(df, fundamentals_overlay({"XYZ": -0.9})["XYZ"])
+    assert bull > bear                       # the tile moves the composite
+    # Absent fundamentals => tile skipped, not imputed.
+    _, comps_none = cat._mosaic_score(df, None)
+    assert "institutional_conviction" not in comps_none

@@ -181,6 +181,43 @@ def conviction_signals(changes: list[HoldingChange]) -> dict[str, float]:
     return out
 
 
+def ticker_conviction(
+    manager_filings: dict[str, list[Filing]],
+    cusip_to_ticker: dict[str, str],
+) -> dict[str, float]:
+    """Aggregate smart-money conviction to a per-ticker score in [-1, 1].
+
+    For each manager we diff their two most recent filings, score the changes, and
+    map CUSIP -> ticker. When several managers touch the same name we average their
+    signed scores — agreement reinforces, disagreement cancels. Names without a
+    CUSIP->ticker mapping are dropped (13F reports CUSIPs, not tickers; supply the
+    map from OpenFIGI or a curated universe list).
+    """
+    per_ticker: dict[str, list[float]] = {}
+    for filings in manager_filings.values():
+        if len(filings) < 2:
+            continue
+        sig = conviction_signals(diff_filings(filings[0], filings[1]))
+        for cusip, score in sig.items():
+            ticker = cusip_to_ticker.get(cusip)
+            if ticker:
+                per_ticker.setdefault(ticker, []).append(score)
+    return {
+        t: max(-1.0, min(1.0, sum(scores) / len(scores)))
+        for t, scores in per_ticker.items()
+    }
+
+
+def fundamentals_overlay(
+    conviction: dict[str, float],
+) -> dict[str, dict[str, float]]:
+    """Shape a per-ticker conviction dict into a fundamentals overlay CATALYST reads
+    as its institutional tile: ``{ticker: {"institutional_conviction": score}}``.
+    Merge this into ``ctx.fundamentals`` when building a live MarketContext.
+    """
+    return {t: {"institutional_conviction": v} for t, v in conviction.items()}
+
+
 # --------------------------------------------------------------- network (opt-in)
 
 def fetch_manager_filings(
