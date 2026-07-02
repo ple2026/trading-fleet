@@ -106,6 +106,32 @@ def survivorship_free_universe(
     return sorted(keep)
 
 
+def filter_panel_by_liquidity(
+    panel: dict,
+    min_dollar_volume: float,
+    keep: tuple[str, ...] = ("SPY",),
+) -> dict:
+    """Drop symbols whose median daily dollar volume (close x volume) is below
+    `min_dollar_volume` — the crude liquidity screen a real tradable universe has
+    but the raw ticker list lacks. Symbols in `keep` (the benchmark) always stay.
+
+    Uses the median over the loaded window, so it is a rough (slightly forward-
+    looking) liquidity proxy, not a point-in-time trailing ADV — good enough to
+    strip micro-cap shells and pump-and-dumps from a survivorship-free sample.
+    """
+    out = {}
+    for sym, df in panel.items():
+        if sym in keep:
+            out[sym] = df
+            continue
+        if df is None or df.empty or "c" not in df or "v" not in df:
+            continue
+        median_dv = float((df["c"] * df["v"]).median())
+        if median_dv >= min_dollar_volume:
+            out[sym] = df
+    return out
+
+
 def sample_universe(tickers: list[str], n: int, seed: int = 0) -> list[str]:
     """Deterministic size-``n`` sample (seeded, order-stable) for tractable backtests.
     Uses a hash so the pick is reproducible across processes without RNG state."""

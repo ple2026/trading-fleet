@@ -20,6 +20,7 @@ from datetime import datetime
 from research.fleet.bots.breakout import Breakout
 from research.fleet.bots.catalyst import Catalyst
 from research.fleet.universe import (
+    filter_panel_by_liquidity,
     load_supported_tickers,
     sample_universe,
     survivorship_free_universe,
@@ -64,6 +65,8 @@ def main() -> None:
     ap.add_argument("--end", default="2024-12-31")
     ap.add_argument("--sample", type=int, default=80)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--min-dv", type=float, default=0.0,
+                    help="min median daily $ volume (liquidity screen; 0=off)")
     args = ap.parse_args()
     _load_env()
 
@@ -84,6 +87,11 @@ def main() -> None:
     print("Loading Tiingo bars (cached after first run)…")
     panel, skipped = _resilient_panel(symbols, start, end)
     print(f"Loaded {len(panel)} symbols ({skipped} skipped: no data / rate-limit / reused ticker)")
+    if args.min_dv > 0:
+        before = len(panel)
+        panel = filter_panel_by_liquidity(panel, args.min_dv)
+        print(f"Liquidity screen (median $vol >= ${args.min_dv:,.0f}/day): "
+              f"{len(panel)} kept, {before - len(panel)} illiquid dropped")
     if "SPY" not in panel:
         print("ERROR: SPY (benchmark) failed to load — cannot classify regime.")
         return
