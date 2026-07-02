@@ -67,6 +67,8 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--min-dv", type=float, default=0.0,
                     help="min median daily $ volume (liquidity screen; 0=off)")
+    ap.add_argument("--fundamentals", choices=["none", "edgar"], default="none",
+                    help="apply the CAN SLIM EPS gate from a point-in-time source")
     args = ap.parse_args()
     _load_env()
 
@@ -96,9 +98,18 @@ def main() -> None:
         print("ERROR: SPY (benchmark) failed to load — cannot classify regime.")
         return
 
+    fundamentals = None
+    if args.fundamentals == "edgar":
+        from research.fleet.edgar_fundamentals import edgar_fundamentals_panel
+        names = [s for s in panel if s != "SPY"]
+        fundamentals = edgar_fundamentals_panel(names)
+        covered = sum(1 for s in names if s.upper() in fundamentals.frames)
+        print(f"EDGAR CAN SLIM gate ON: {covered}/{len(names)} names have EPS history "
+              f"(point-in-time, filed dates; uncovered names pass the gate ungated)")
+
     bot_class = BOTS[args.bot]
     print(f"\nWalk-forward OOS for {args.bot} (3y train -> 6m test, rolling)…")
-    res = walk_forward(bot_class, panel, start, end)
+    res = walk_forward(bot_class, panel, start, end, fundamentals=fundamentals)
     m = res.metrics()
     if not m:
         print("(no OOS trades — sample too small / too illiquid)")
