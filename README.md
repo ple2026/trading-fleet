@@ -68,7 +68,13 @@ into new buys / adds / trims / exits:
 
 ```bash
 python -m research.scripts.smart_money --ua "Your Name you@email.com"
+python -m research.scripts.smart_money --manager druckenmiller --resolve   # CUSIP→ticker
 ```
+
+`--resolve` maps each new-buy / exit CUSIP to a ticker via OpenFIGI (free), closing
+the loop into CATALYST: 13F diff → `conviction_signals` → `resolve_cusips` →
+`ticker_conviction` → `fundamentals_overlay` → CATALYST's `institutional_conviction`
+mosaic tile.
 
 > 13F is **longs-only, quarter-end, filed up to 45 days late** — no shorts, no
 > timing. It is an *idea filter / one weak mosaic tile*, never a copy-trade or a
