@@ -50,15 +50,28 @@ sleeve, never the core. **MACRO (corr −0.15) is its natural complement.**
 
 ## Next steps, in order (pre-register each; one run; kill or keep)
 
-1. **Blend experiment (needs the v20 machine).** Load
-   `trading-agent/backtest-output/v20/equity-layers.csv` (daily equity by layer) →
-   compute corr(v20, MACRO OOS curve), corr(v20, SPY) → blend v20 + MACRO + index
-   beta via `research/fleet/allocator.py` (risk-parity + quarter-Kelly + corr
-   freeze) → report blended Sharpe/MaxDD vs v20 alone. This is the number that
-   answers "how do we do better than v20."
-2. **Multi-asset trend program** — upgrade MACRO: more markets, long AND short,
-   vol-weighted sizing (managed-futures replication). Highest-prior new sleeve;
-   bar = OOS Sharpe > 0.5 and |corr| < 0.3 to v20/SPY.
+1. ~~**Blend experiment (needs the v20 machine).**~~ **DONE 2026-07-02 — see
+   `docs/BLEND_V20_RESULT.md`.** Verdict: **v20 + MACRO (skip SPY) is a regime-robust
+   Pareto win** — corr(v20,MACRO) ≈ **0.00** (SPY is +0.63 redundant beta and every
+   optimiser zeroes it). A ~50/50 v20+MACRO blend **halves MaxDD (−48% → −24%) in
+   every sub-period** while nudging Sharpe up (1.47 → 1.55), no leverage. The
+   allocator's risk-parity choice halves DD too but does NOT beat v20 on Sharpe
+   (1.37) — it optimises equal-risk-contribution, not Sharpe; for "beat v20" tilt to
+   v20-heavy with MACRO as the diversifier. Improvement is diversification, not
+   return; v20's return-level fragility is unchanged.
+2. ~~**Multi-asset trend program**~~ **DONE 2026-07-02 — see
+   `docs/STEP2_TREND_SLEEVE_RESULT.md`. Modest win (honest version).** Vol-targeted
+   long/short TSMOM on ETFs, textbook params (OOS). **TREND_NE** (8 non-equity ETFs) =
+   corr to v20 **−0.11**, robust across 4/5 sub-periods. But benchmarked against CASH
+   (the honest test): a de-risked book gets ~78% of its drawdown cut just from holding
+   *less v20*; TREND_NE's marginal edge OVER cash is **+3.3pp CAGR / +0.12 Sharpe /
+   +6.4pp DD** — real, ~3× MACRO's, but an increment, not a transformation. Deliverable
+   = unlevered 47/53 v20+TREND_NE, monthly rebalance, no timing: **~38% CAGR / Sharpe
+   1.65 / −19% DD** (vs v20 69%/1.47/−48%). Leverage to match v20's return works but is
+   the soft part (financing + stacked-leverage risk; DON'T lead with the 81% free-
+   leverage number). Lesson: for a hedge, optimise **correlation/tail**, not standalone
+   Sharpe — the breadth/ensemble "improvements" raised solo Sharpe but *diluted* the
+   hedge (worse blend DD). Promote over MACRO; size as incremental.
 3. **Cross-sectional 12-1 momentum** (monthly, top decile) on the
    survivorship-free universe (`universe.py`) — the honest factor test.
 4. Bench: VRP via trading-agent's options infra (ORATS/LEAPS); EDGAR
