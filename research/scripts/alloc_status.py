@@ -112,6 +112,10 @@ def main() -> None:
         "action": actions if actions else ["NONE"],
         "mode": "PAPER",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
+        # last ~3y of the dial the engine ACTUALLY held (gate-off = 0, rebound
+        # floors, band steps) — for the dashboard's recent-dial strip
+        "dial_history": [[str(d.date()), round(float(v), 2)]
+                         for d, v in st["lev"].tail(756).items()],
     }
     with open(OUT, "w") as f:
         json.dump(out, f, indent=1)
