@@ -63,6 +63,9 @@ class FleetSignal:
     confidence: float  # 0..1
     thesis: str
     features: dict[str, Any] = field(default_factory=dict)
+    # Falsification criteria (MACRO): the explicit condition that would prove the
+    # thesis wrong. Journaled to the `theses` table and scored at 60/120 days.
+    invalidation: str | None = None
     # For market-neutral bots (ARB): the paired/hedge leg, if any.
     hedge_symbol: str | None = None
     hedge_ratio: float | None = None

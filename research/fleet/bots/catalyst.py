@@ -38,6 +38,9 @@ missing data plane is skipped, never imputed to zero-with-weight). Components:
   (d) insider buying — skipped unless `ctx.fundamentals[sym]` carries it.
   (e) pre-event drift — the 5-day return leading into the event window; smart
       money often positions ahead of the print, so drift is directional.
+  (f) institutional conviction — a signed 13F smart-money score (Druckenmiller /
+      Cohen newly bought vs exited), skipped unless `ctx.fundamentals[sym]` carries
+      it. Lagged and weak by construction (see `smart_money.py`).
 
 NOTE ON WEIGHTS: the composite is an *unweighted mean* of present components on
 purpose. These are PLACEHOLDER weights. The improvement engine's Tier-B logistic
@@ -189,6 +192,22 @@ class Catalyst(Bot):
         # A ~8% 5-day drift saturates the component.
         return self._clip1(ret_5 / 0.08)
 
+    def _institutional_conviction(self, fund: dict[str, Any] | None) -> float | None:
+        """(f) Smart-money 13F conviction, if the fundamentals plane supplies it.
+
+        Reads a signed `institutional_conviction` in [-1, 1] built from Druckenmiller
+        / Cohen 13F quarter-over-quarter changes (see `smart_money.py`): a name they
+        newly bought scores +1, one they exited -1. It is deliberately LAGGED and
+        weak (13F is quarter-end, filed up to 45 days late), so it is just one tile
+        of the mosaic — the weekly re-fit decides how much it is worth. Skipped when
+        absent (the usual offline case)."""
+        if not fund:
+            return None
+        conv = fund.get("institutional_conviction")
+        if conv is None:
+            return None
+        return self._clip1(float(conv))
+
     def _mosaic_score(
         self, df: pd.DataFrame, fund: dict[str, Any] | None
     ) -> tuple[float, dict[str, float]]:
@@ -205,6 +224,7 @@ class Catalyst(Bot):
             "short_interest_delta": self._short_interest_delta(fund),
             "insider_buying": self._insider_buying(fund),
             "pre_event_drift": self._pre_event_drift(close),
+            "institutional_conviction": self._institutional_conviction(fund),
         }
         components = {k: v for k, v in raw.items() if v is not None}
         if not components:
@@ -270,7 +290,6 @@ class Catalyst(Bot):
     def scan(self, ctx: MarketContext) -> list[FleetSignal]:
         threshold = float(self.params["mosaic_threshold"])
         days_before = int(self.params["days_before"])
-        hold_days = int(self.params["hold_days"])
         stop_pct = float(self.params["stop_pct"])
 
         risk_regime = ctx.regime.label in (RegimeTag.HIGH_VOL, RegimeTag.RISK_OFF)

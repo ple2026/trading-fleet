@@ -42,6 +42,8 @@ gates, and the build sequence.
 pip install -e ".[dev]"                    # or: pip install pandas numpy statsmodels scikit-learn scipy
 python -m research.scripts.backtest        # all four bots on synthetic data
 python -m research.scripts.backtest --bot breakout --start 2021-01-01 --end 2024-12-31
+python -m research.scripts.improve         # the improvement run: journal→Tier C→Tier B→allocation
+python -m research.scripts.improve --tune  # + Tier-A walk-forward parameter re-fit (slow)
 ```
 
 With no `ALPACA_*` keys the data plane falls back to a deterministic synthetic
@@ -51,12 +53,70 @@ drawing any conclusion.
 
 ## Going live-ish (real data → paper trading)
 
-1. `cp .env.example .env` and fill in `ALPACA_*` (paper), `DATABASE_URL` (Neon),
-   and the research vendor keys (`FMP_API_KEY`, `FINNHUB_API_KEY`, `FRED_API_KEY`).
+1. `cp .env.example .env` and fill in the research vendor keys. With just
+   `TIINGO_API_KEY` (adjusted prices) and `FRED_API_KEY` (macro), the backtest runs
+   on **real data** — `python -m research.scripts.backtest` auto-loads `.env`,
+   prefers Tiingo, and turns on MACRO's FRED state vector. Add `ALPACA_*` (paper) and
+   `DATABASE_URL` (Neon) for execution + the persistent journal.
 2. `psql "$DATABASE_URL" -f db/schema.sql` to create the journal.
 3. Backtest each bot on real bars; only bots clearing the promotion gates in
    `docs/FLEET_PLAN.md §10` advance to paper.
 4. 30-day paper burn-in per bot before any real capital.
+
+> Real prices ≠ trustworthy backtest. The default universe is survivorship-biased
+> and a single-pass backtest is in-sample — use `walkforward.py` and the holdout
+> vault (§7e) before believing any number.
+
+## Smart-money 13F signal (Druckenmiller & Cohen)
+
+Two namesakes still file **13F-HR** reports: Druckenmiller (Duquesne Family Office)
+and Cohen (Point72). `smart_money.py` pulls them from SEC EDGAR and diffs quarters
+into new buys / adds / trims / exits:
+
+```bash
+python -m research.scripts.smart_money --ua "Your Name you@email.com"
+python -m research.scripts.smart_money --manager druckenmiller --resolve   # CUSIP→ticker
+```
+
+`--resolve` maps each new-buy / exit CUSIP to a ticker via OpenFIGI (free), closing
+the loop into CATALYST: 13F diff → `conviction_signals` → `resolve_cusips` →
+`ticker_conviction` → `fundamentals_overlay` → CATALYST's `institutional_conviction`
+mosaic tile.
+
+> 13F is **longs-only, quarter-end, filed up to 45 days late** — no shorts, no
+> timing. It is an *idea filter / one weak mosaic tile*, never a copy-trade or a
+> training label. Under §7e it earns weight only if the journal shows measured,
+> out-of-sample edge. (See the top of `smart_money.py`.)
+
+## Honest out-of-sample check (survivorship-free)
+
+`scripts/oos.py` runs the walk-forward harness on a survivorship-free sample
+(delisted names included) with optional liquidity + CAN SLIM screens. Adding each
+real O'Neil filter improves BREAKOUT's OOS in the right direction — the apparatus
+working as intended:
+
+On a 147-name liquid sample (46% of the raw draw already delisted), each real
+control moves BREAKOUT the right way — and the regime-exit shows the drawdown was an
+*exit* problem, not an entry one:
+
+| BREAKOUT walk-forward OOS 2020–24 (147 names) | CAGR | Sharpe | MaxDD |
+|---|---|---|---|
+| baseline | −9.6% | −0.32 | −48.7% |
+| + 15% drawdown circuit breaker (pause entries) | −8.4% | −0.28 | −45.4% |
+| + regime-exit — sell into weakness (O'Neil "M") | −6.0% | −0.31 | −35.4% |
+| **SPY buy & hold (benchmark)** | **+14.4%** | — | **−33.7%** |
+
+```bash
+python -m research.scripts.oos --bot breakout --min-dv 5000000 --fundamentals edgar
+```
+
+**The verdict is honest and unflattering: BREAKOUT loses to just buying the index**,
+on both return and (until the regime-exit) drawdown. The controls fixed the tail
+risk (−49%→−35%, now ≈ SPY's −34%) but not the lack of edge. A random ~equal-weight
+liquid basket is a weaker opportunity set than cap-weighted SPY, and the full O'Neil
+stack (industry-group leadership, follow-through-day) isn't in yet. The value here is
+the *method* — a bias-corrected, benchmarked, walk-forward measurement that refuses
+to flatter the strategy — not the number.
 
 ## The self-improvement loop (short version)
 
@@ -82,13 +142,35 @@ research/
   fleet/
     types.py        indicators.py   bot.py          # shared contracts
     data.py         regime.py       kelly.py        # platform
-    journal.py      backtest.py                     # platform
+    journal.py      backtest.py                     # platform (journal-wired)
+    walkforward.py                                  # walk-forward + Tier-A tuner
+    allocator.py                                    # L3 meta-allocator + corr monitor
+    improve.py                                      # Tier-B proposals + Tier-C gates
+    theses.py                                       # MACRO thesis 60/120d scoring
+    promotion.py                                    # champion/challenger shadow test
+    smart_money.py                                  # 13F picks (Druckenmiller/Cohen)
+    macro_data.py                                   # FRED macro state vector (MACRO)
+    fundamentals.py                                 # Tiingo CAN SLIM (DOW-30, BREAKOUT gate)
+    edgar_fundamentals.py                           # SEC XBRL CAN SLIM (free, all filers, PIT)
+    universe.py                                     # survivorship-free ticker universe
     bots/
       breakout.py   arb.py          catalyst.py     macro.py
   scripts/
-    backtest.py                                     # run one/all bots
-  tests/
+    backtest.py     improve.py                      # backtest / the improvement run
+    smart_money.py                                  # trace 13F picks from SEC EDGAR
+  tests/                                            # offline, no credentials
 db/schema.sql                                       # journal (Postgres)
 execution/                                          # TS Alpaca executor (phase 2)
 docs/FLEET_PLAN.md
 ```
+
+The improvement engine is wired end-to-end offline: `run_backtest(..., journal=…)`
+records every decision (taken **and** rejected) plus closed-position outcomes;
+`walkforward.tune` re-fits parameters against the §7b OOS gates; `allocator.allocate`
+sizes bots by risk-parity + quarter-Kelly Sharpe tilt with the §8 correlation
+freeze; `improve` turns the journal into Tier-C regime recommendations and
+bounded Tier-B rule-change proposals; `theses` scores MACRO's falsifiable theses at
+60/120 days; and `promotion` shadow-validates an accepted challenger on a held-out
+window before it can replace the champion. ARB is modelled as a true two-leg,
+beta-neutral pair. All of it runs on synthetic data with no credentials — a
+plumbing check, not an edge estimate.

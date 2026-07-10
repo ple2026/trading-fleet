@@ -326,7 +326,7 @@ class Macro(Bot):
                 stop_loss = price * (1.0 + stop_pct / 100.0)
                 take_profit = price * (1.0 - tp_move)
 
-            thesis = self._make_thesis(sym, side, cand, state)
+            statement, invalidation = self._make_thesis(sym, side, cand, state)
 
             signals.append(
                 FleetSignal(
@@ -338,7 +338,8 @@ class Macro(Bot):
                     stop_loss=float(stop_loss),
                     take_profit=float(take_profit),
                     confidence=conv,  # sizing follows conviction
-                    thesis=thesis,
+                    thesis=statement,
+                    invalidation=invalidation,
                     features={
                         "state_vector": {
                             k: v for k, v in state.items() if k != "mode"
@@ -354,25 +355,28 @@ class Macro(Bot):
                 )
             )
             # Remember why we're in, for both display and falsification.
-            self._thesis[sym] = thesis
+            self._thesis[sym] = statement
             self._drivers[sym] = (cand["driver_key"], cand["driver_sign"])
 
         return signals
 
     def _make_thesis(
         self, sym: str, side: str, cand: dict, state: dict[str, float]
-    ) -> str:
+    ) -> tuple[str, str]:
+        """Return (statement, invalidation) — the falsifiable thesis and the exact
+        condition that would prove it wrong (scored later at 60/120 days)."""
         key = cand["driver_key"]
         sign = cand["driver_sign"]
         val = state.get(key, 0.0)
         direction = "positive" if sign > 0 else "negative"
         verb = "Long" if side == "buy" else "Short"
-        return (
+        statement = (
             f"{verb} {sym}: {key} is {direction} ({val:+.2%}) with "
             f"{cand['agreement']} rule(s) in agreement "
-            f"[{', '.join(cand['rules'])}]. "
-            f"Invalidated if {key} crosses back through zero against the position."
+            f"[{', '.join(cand['rules'])}]."
         )
+        invalidation = f"{key} crosses back through zero against the position."
+        return statement, invalidation
 
     # ----------------------------------------------------------------- manage
     def manage(self, ctx: MarketContext) -> list[ManagementAction]:

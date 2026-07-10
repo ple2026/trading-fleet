@@ -4,25 +4,46 @@ Design rules baked in (the anti-overfitting constitution):
   - No lookahead: bots only ever see bars dated <= the simulated `now`.
   - T+1 execution: a signal generated on day D fills at day D+1's open.
   - Slippage floor: min 5 bps equities on every fill, always.
-  - Walk-forward is a first-class primitive; in-sample metrics are never returned.
+
+This module is the single-pass simulator. The anchored walk-forward harness that
+wraps it (fit -> validate -> roll, out-of-sample metrics only) lives in
+`walkforward.py`; in-sample results are never reported from there.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
 
 from .bot import Bot, MarketContext
 from .data import slice_pit
+from .journal import Journal
 from .kelly import size_order
 from .regime import classify_price_regime
-from .types import FleetSignal
+from .types import FleetSignal, RegimeState
 
 SLIPPAGE_BPS_EQUITY = 5.0
 TRADING_DAYS = 252
+
+
+class MacroLookup(Protocol):
+    """Anything that can return a point-in-time macro dict for a date — e.g.
+    `macro_data.MacroPanel`. Kept as a Protocol so backtest.py stays decoupled
+    from the FRED plane (and works with a stub in tests)."""
+
+    def as_of(self, date: datetime) -> dict[str, float]: ...
+
+
+class FundamentalsLookup(Protocol):
+    """Point-in-time fundamentals per ticker for a date — e.g.
+    `fundamentals.FundamentalsPanel`. Feeds `ctx.fundamentals` (BREAKOUT's CAN SLIM
+    gate, CATALYST's tiles)."""
+
+    def as_of(self, date: datetime) -> dict[str, dict]: ...
 # Unleveraged $10k cash book: total gross exposure (longs + shorts) may not exceed
 # equity. Without this a bot that shorts many names can drive the account negative.
 MAX_GROSS = 1.0
@@ -39,6 +60,22 @@ class Position:
     side: str
     max_favorable_bps: float = 0.0
     max_adverse_bps: float = 0.0
+    # Regime label at entry — Tier C reads this off closed positions to measure
+    # each bot's regime-conditional edge.
+    entry_regime: str = ""
+    # The decision snapshot the entry signal carried. Tier B replays these features
+    # against the trade's outcome to find recurring failure modes.
+    entry_features: dict = field(default_factory=dict)
+    thesis: str = ""
+    # Optional hedge leg for market-neutral pairs (ARB). When `hedge_symbol` is set
+    # the position is a two-leg spread: the hedge leg trades the OPPOSITE side of
+    # `side`, sized beta-neutral, and P&L / marks / cash count BOTH legs. Hedged
+    # positions skip the naked leg-A price stop and exit via the bot's manage()
+    # (z-score) logic, since a single-leg price stop is meaningless on a spread.
+    hedge_symbol: str = ""
+    hedge_qty: float = 0.0
+    hedge_entry_px: float = 0.0
+    hedge_side: str = ""
 
 
 @dataclass
@@ -71,20 +108,47 @@ def _apply_slippage(px: float, side: str, bps: float = SLIPPAGE_BPS_EQUITY) -> f
     return px + adj if side == "buy" else px - adj
 
 
-def _close_cash(cash: float, pos: "Position", fill: float) -> tuple[float, float]:
-    """Apply a closing fill's cash effect. Returns (pnl, new_cash).
+def _open_leg_cash(cash: float, side: str, qty: float, fill: float) -> float:
+    """Cash effect of OPENING a leg: a long pays out, a short receives proceeds."""
+    return cash - fill * qty if side == "buy" else cash + fill * qty
 
-    Long close sells shares back into cash; short close buys shares to cover,
-    paying out of cash. Consistent with entry (long pays, short receives), so a
-    round-trip's net cash change equals its P&L — no phantom notional.
-    """
-    if pos.side == "buy":
-        pnl = (fill - pos.entry_px) * pos.qty
-        cash += fill * pos.qty
+
+def _close_leg(
+    cash: float, side: str, entry_px: float, qty: float, fill: float
+) -> tuple[float, float]:
+    """Close one leg. Returns (pnl, new_cash). A long sells back into cash; a short
+    buys to cover, paying out — so a round-trip's net cash change equals its P&L."""
+    if side == "buy":
+        pnl = (fill - entry_px) * qty
+        cash += fill * qty
     else:
-        pnl = (pos.entry_px - fill) * pos.qty
-        cash -= fill * pos.qty
+        pnl = (entry_px - fill) * qty
+        cash -= fill * qty
     return pnl, cash
+
+
+def _leg_mark(side: str, qty: float, close: float) -> float:
+    """Mark-to-market contribution of a leg: long adds, short subtracts."""
+    return close * qty if side == "buy" else -close * qty
+
+
+def _close_position(
+    cash: float, pos: "Position", main_fill: float, hedge_fill: float | None = None
+) -> tuple[float, float]:
+    """Close a position (both legs if it is a hedged pair). Returns (combined
+    P&L, new_cash)."""
+    pnl, cash = _close_leg(cash, pos.side, pos.entry_px, pos.qty, main_fill)
+    if pos.hedge_symbol and hedge_fill is not None:
+        h_pnl, cash = _close_leg(
+            cash, pos.hedge_side, pos.hedge_entry_px, pos.hedge_qty, hedge_fill
+        )
+        pnl += h_pnl
+    return pnl, cash
+
+
+def _regime_payload(regime: RegimeState) -> dict:
+    """Flatten a RegimeState into the JSON blob the journal stores per decision."""
+    return {"label": regime.label.value, "conviction": regime.conviction, **regime.vector}
 
 
 def run_backtest(
@@ -94,12 +158,27 @@ def run_backtest(
     end: datetime,
     starting_equity: float = 10_000.0,
     benchmark: str = "SPY",
+    journal: Journal | None = None,
+    macro: "MacroLookup | None" = None,
+    fundamentals: "FundamentalsLookup | None" = None,
+    circuit_breaker_pct: float | None = None,
 ) -> BacktestResult:
     """Simulate one bot over [start, end] on a fixed price panel.
+
+    `circuit_breaker_pct` (e.g. 0.15) is the per-bot drawdown circuit breaker the
+    live ledger enforces: when equity is that far below its high-water mark, NEW
+    entries are paused (open positions are still managed and exited) until it
+    recovers. None (default) disables it — so existing backtests are unchanged.
 
     `panel` must include the benchmark symbol for regime classification. Bots that
     need fundamentals/calendar/macro receive them as None here — a stock-only
     smoke run — and their concrete data planes wire those in for full backtests.
+
+    When a `journal` is supplied, every signal is recorded with its disposition
+    (taken / rejected_*) — including the counterfactuals the improvement engine
+    needs: signals blocked because the regime was unfavorable are scanned and
+    logged as `rejected_regime` even though they never trade. Every closed
+    position is journaled with MFE/MAE, exit reason, and entry regime.
     """
     all_dates = sorted(
         {d for df in panel.values() for d in df.index if start <= d <= end}
@@ -112,6 +191,32 @@ def run_backtest(
     positions: dict[str, Position] = {}
     trades: list[Trade] = []
     curve: dict[datetime, float] = {}
+    high_water = starting_equity        # for the per-bot drawdown circuit breaker
+
+    def _record_trade(
+        pos: Position, exit_fill: float, pnl: float, reason: str, exit_at: datetime
+    ) -> None:
+        """Build the Trade record, append it, and journal the position close."""
+        per_share_risk = abs(pos.entry_px - pos.stop) or 1e-9
+        r_multiple = pnl / (per_share_risk * pos.qty)
+        trades.append(Trade(
+            symbol=pos.symbol, side=pos.side, entry_at=pos.entry_at, exit_at=exit_at,
+            entry_px=pos.entry_px, exit_px=exit_fill, qty=pos.qty, pnl_usd=pnl,
+            r_multiple=r_multiple, exit_reason=reason,
+            max_favorable_bps=pos.max_favorable_bps, max_adverse_bps=pos.max_adverse_bps,
+        ))
+        if journal is not None:
+            journal.record_position_close({
+                "bot_id": bot.id, "symbol": pos.symbol, "opened_at": pos.entry_at,
+                "closed_at": exit_at, "entry_px": pos.entry_px, "exit_px": exit_fill,
+                "qty": pos.qty, "max_favorable_bps": pos.max_favorable_bps,
+                "max_adverse_bps": pos.max_adverse_bps, "exit_reason": reason,
+                "pnl_usd": pnl, "r_multiple": r_multiple, "side": pos.side,
+                "entry_regime": pos.entry_regime,
+                "entry_features": pos.entry_features, "thesis": pos.thesis,
+                "hedge_symbol": pos.hedge_symbol, "hedge_qty": pos.hedge_qty,
+                "hedge_side": pos.hedge_side, "hedge_entry_px": pos.hedge_entry_px,
+            })
 
     for i, today in enumerate(all_dates):
         pit = slice_pit(panel, today)
@@ -122,7 +227,27 @@ def run_backtest(
             bar = panel[sym].loc[panel[sym].index == today]
             if bar.empty:
                 continue
-            hi, lo, close = float(bar["h"].iloc[0]), float(bar["l"].iloc[0]), float(bar["c"].iloc[0])
+
+            if pos.hedge_symbol:
+                # Hedged pair: MFE/MAE on COMBINED (both-leg) unrealized P&L, in bps
+                # of the main leg's notional. No leg-A price stop — a spread is
+                # exited by the bot's z-score manage() logic below.
+                close_a = float(bar["c"].iloc[0])
+                hbar = panel[pos.hedge_symbol].loc[panel[pos.hedge_symbol].index == today]
+                if hbar.empty:
+                    continue
+                close_b = float(hbar["c"].iloc[0])
+                main_pnl = (close_a - pos.entry_px) * pos.qty if pos.side == "buy" \
+                    else (pos.entry_px - close_a) * pos.qty
+                hedge_pnl = (close_b - pos.hedge_entry_px) * pos.hedge_qty \
+                    if pos.hedge_side == "buy" else (pos.hedge_entry_px - close_b) * pos.hedge_qty
+                combined = main_pnl + hedge_pnl
+                base = (pos.entry_px * pos.qty) or 1e-9
+                pos.max_favorable_bps = max(pos.max_favorable_bps, max(combined, 0.0) / base * 10_000)
+                pos.max_adverse_bps = max(pos.max_adverse_bps, max(-combined, 0.0) / base * 10_000)
+                continue
+
+            hi, lo = float(bar["h"].iloc[0]), float(bar["l"].iloc[0])
             fav = (hi - pos.entry_px) / pos.entry_px if pos.side == "buy" else (pos.entry_px - lo) / pos.entry_px
             adv = (pos.entry_px - lo) / pos.entry_px if pos.side == "buy" else (hi - pos.entry_px) / pos.entry_px
             pos.max_favorable_bps = max(pos.max_favorable_bps, fav * 10_000)
@@ -142,21 +267,16 @@ def run_backtest(
 
             if exit_px is not None:
                 fill = _apply_slippage(exit_px, "sell" if pos.side == "buy" else "buy")
-                pnl, cash = _close_cash(cash, pos, fill)
-                per_share_risk = abs(pos.entry_px - pos.stop) or 1e-9
-                trades.append(Trade(
-                    symbol=sym, side=pos.side, entry_at=pos.entry_at, exit_at=today,
-                    entry_px=pos.entry_px, exit_px=fill, qty=pos.qty, pnl_usd=pnl,
-                    r_multiple=pnl / (per_share_risk * pos.qty),
-                    exit_reason=exit_reason, max_favorable_bps=pos.max_favorable_bps,
-                    max_adverse_bps=pos.max_adverse_bps,
-                ))
+                pnl, cash = _close_position(cash, pos, fill)
+                _record_trade(pos, fill, pnl, exit_reason, today)
                 del positions[sym]
 
         # --- management actions from the bot (trend-break, time stops, etc.) ---
         ctx = MarketContext(
             now=today, prices=pit, regime=regime, equity_usd=cash,
             open_symbols=set(positions.keys()),
+            macro=macro.as_of(today) if macro is not None else None,
+            fundamentals=fundamentals.as_of(today) if fundamentals is not None else None,
         )
         for action in bot.manage(ctx):
             if action.kind == "exit" and action.symbol in positions:
@@ -165,66 +285,144 @@ def run_backtest(
                 if bar.empty:
                     continue
                 px = _apply_slippage(float(bar["c"].iloc[0]), "sell" if pos.side == "buy" else "buy")
-                pnl, cash = _close_cash(cash, pos, px)
-                per_share_risk = abs(pos.entry_px - pos.stop) or 1e-9
-                trades.append(Trade(
-                    symbol=pos.symbol, side=pos.side, entry_at=pos.entry_at, exit_at=today,
-                    entry_px=pos.entry_px, exit_px=px, qty=pos.qty, pnl_usd=pnl,
-                    r_multiple=pnl / (per_share_risk * pos.qty), exit_reason=action.reason,
-                    max_favorable_bps=pos.max_favorable_bps, max_adverse_bps=pos.max_adverse_bps,
-                ))
+                hedge_px = None
+                if pos.hedge_symbol:
+                    hbar = panel[pos.hedge_symbol].loc[panel[pos.hedge_symbol].index == today]
+                    if hbar.empty:
+                        continue  # can't close the pair cleanly today; hold to next bar
+                    hedge_px = _apply_slippage(
+                        float(hbar["c"].iloc[0]), "sell" if pos.hedge_side == "buy" else "buy"
+                    )
+                pnl, cash = _close_position(cash, pos, px, hedge_px)
+                _record_trade(pos, px, pnl, action.reason, today)
                 del positions[action.symbol]
 
         # --- new entries: scan today, fill at NEXT day's open (T+1) ---
-        if bot.may_trade(regime) and i + 1 < len(all_dates):
+        may = bot.may_trade(regime)
+        regime_json = _regime_payload(regime) if journal is not None else None
+
+        def _reject(sig: FleetSignal, reason_code: str, why: str) -> None:
+            if journal is not None:
+                journal.record_signal(sig, reason_code, reject_reason=why, regime=regime_json)
+
+        # Scan even when the regime gate is shut IFF we are journaling, so the
+        # improvement engine sees what the bot *would* have done (Tier C data).
+        if (may or journal is not None) and i + 1 < len(all_dates):
             next_day = all_dates[i + 1]
-            equity_now = cash + sum(
-                (float(panel[s].loc[panel[s].index == today, "c"].iloc[0])
-                 * (p.qty if p.side == "buy" else -p.qty))
-                for s, p in positions.items()
-                if today in panel[s].index
-            )
-            gross_open = sum(p.entry_px * p.qty for p in positions.values())
             signals: list[FleetSignal] = bot.scan(ctx)
             # Rank by confidence so that when we hit a cap we keep the bot's best
             # ideas, not whatever happened to be iterated first.
             signals = sorted(signals, key=lambda s: s.confidence, reverse=True)
-            for sig in signals:
-                if len(positions) >= bot.max_concurrent:
-                    break
-                if sig.symbol in positions:
-                    continue
-                order = size_order(sig, cash)
-                if order is None:
-                    continue
-                nb = panel.get(sig.symbol)
-                if nb is None or next_day not in nb.index:
-                    continue
-                fill = _apply_slippage(float(nb.loc[next_day, "o"]), sig.side)
-                notional = fill * order.qty
-                # Unleveraged gross-exposure cap (longs + shorts <= equity).
-                if gross_open + notional > equity_now * MAX_GROSS:
-                    continue
-                if sig.side == "buy":
-                    if notional > cash:
-                        continue
-                    cash -= notional          # pay for the shares
-                else:
-                    cash += notional          # short sale: receive proceeds
-                gross_open += notional
-                positions[sig.symbol] = Position(
-                    symbol=sig.symbol, qty=order.qty, entry_px=fill, entry_at=next_day,
-                    stop=sig.stop_loss, target=sig.take_profit, side=sig.side,
-                )
 
-        # --- record equity: cash + long marks - short liabilities ---
+            if not may:
+                for sig in signals:
+                    _reject(sig, "rejected_regime",
+                            f"regime {regime.label.value} not in favorable set")
+            else:
+                equity_now = cash
+                for s, p in positions.items():
+                    if today in panel[s].index:
+                        equity_now += _leg_mark(
+                            p.side, p.qty,
+                            float(panel[s].loc[panel[s].index == today, "c"].iloc[0]),
+                        )
+                    if p.hedge_symbol and today in panel[p.hedge_symbol].index:
+                        equity_now += _leg_mark(
+                            p.hedge_side, p.hedge_qty,
+                            float(panel[p.hedge_symbol].loc[
+                                panel[p.hedge_symbol].index == today, "c"].iloc[0]),
+                        )
+                gross_open = sum(
+                    p.entry_px * p.qty
+                    + (p.hedge_entry_px * p.hedge_qty if p.hedge_symbol else 0.0)
+                    for p in positions.values()
+                )
+                # Per-bot drawdown circuit breaker: while equity is >= the threshold
+                # below its high-water mark, pause NEW entries (managed exits still run).
+                halted = (
+                    circuit_breaker_pct is not None and high_water > 0
+                    and (high_water - equity_now) / high_water >= circuit_breaker_pct
+                )
+                for sig in signals:
+                    if halted:
+                        _reject(sig, "rejected_circuit",
+                                f"drawdown circuit breaker "
+                                f">= {circuit_breaker_pct * 100:.0f}% below high-water")
+                        continue
+                    if len(positions) >= bot.max_concurrent:
+                        _reject(sig, "rejected_cap", "max_concurrent positions held")
+                        continue
+                    if sig.symbol in positions:
+                        _reject(sig, "rejected_dup", "already holding symbol")
+                        continue
+                    order = size_order(sig, cash)
+                    if order is None:
+                        _reject(sig, "rejected_risk", "no risk budget (size_order=None)")
+                        continue
+                    nb = panel.get(sig.symbol)
+                    if nb is None or next_day not in nb.index:
+                        _reject(sig, "rejected_nodata", "no next-day bar to fill")
+                        continue
+                    fill = _apply_slippage(float(nb.loc[next_day, "o"]), sig.side)
+                    main_notional = fill * order.qty
+
+                    # Optional beta-neutral hedge leg (market-neutral pairs). Sized
+                    # so the hedge notional ~= beta * main notional, on the OPPOSITE
+                    # side, so the pair is (approximately) dollar-beta-neutral.
+                    hedge_symbol = sig.hedge_symbol or ""
+                    hedge_side = ""
+                    hedge_qty = hedge_fill = hedge_notional = 0.0
+                    if hedge_symbol and sig.hedge_ratio:
+                        hb = panel.get(hedge_symbol)
+                        if hb is None or next_day not in hb.index:
+                            _reject(sig, "rejected_nodata", "hedge leg has no next-day bar")
+                            continue
+                        hedge_side = "sell" if sig.side == "buy" else "buy"
+                        hedge_fill = _apply_slippage(float(hb.loc[next_day, "o"]), hedge_side)
+                        beta = abs(float(sig.hedge_ratio))
+                        hedge_qty = float(int(beta * main_notional / hedge_fill)) if hedge_fill > 0 else 0.0
+                        if hedge_qty <= 0:
+                            _reject(sig, "rejected_risk", "hedge leg rounds to zero shares")
+                            continue
+                        hedge_notional = hedge_fill * hedge_qty
+
+                    total_notional = main_notional + hedge_notional
+                    # Unleveraged gross-exposure cap (all legs, longs + shorts <= equity).
+                    if gross_open + total_notional > equity_now * MAX_GROSS:
+                        _reject(sig, "rejected_gross", "gross-exposure cap")
+                        continue
+
+                    new_cash = _open_leg_cash(cash, sig.side, order.qty, fill)
+                    if hedge_qty > 0:
+                        new_cash = _open_leg_cash(new_cash, hedge_side, hedge_qty, hedge_fill)
+                    if new_cash < 0:
+                        _reject(sig, "rejected_cash", "insufficient cash for legs")
+                        continue
+                    cash = new_cash
+                    gross_open += total_notional
+                    positions[sig.symbol] = Position(
+                        symbol=sig.symbol, qty=order.qty, entry_px=fill, entry_at=next_day,
+                        stop=sig.stop_loss, target=sig.take_profit, side=sig.side,
+                        entry_regime=regime.label.value,
+                        entry_features=dict(sig.features), thesis=sig.thesis,
+                        hedge_symbol=hedge_symbol, hedge_qty=hedge_qty,
+                        hedge_entry_px=hedge_fill, hedge_side=hedge_side,
+                    )
+                    if journal is not None:
+                        journal.record_signal(sig, "taken", regime=regime_json)
+
+        # --- record equity: cash + all legs' marks (long adds, short subtracts) ---
         mkt = 0.0
         for sym, pos in positions.items():
             bar = panel[sym].loc[panel[sym].index == today]
             if not bar.empty:
-                close = float(bar["c"].iloc[0])
-                mkt += close * pos.qty if pos.side == "buy" else -close * pos.qty
+                mkt += _leg_mark(pos.side, pos.qty, float(bar["c"].iloc[0]))
+            if pos.hedge_symbol:
+                hbar = panel[pos.hedge_symbol].loc[panel[pos.hedge_symbol].index == today]
+                if not hbar.empty:
+                    mkt += _leg_mark(pos.hedge_side, pos.hedge_qty, float(hbar["c"].iloc[0]))
         curve[today] = cash + mkt
+        high_water = max(high_water, curve[today])
 
     return BacktestResult(equity_curve=pd.Series(curve), trades=trades)
 
